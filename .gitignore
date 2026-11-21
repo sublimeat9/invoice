@@ -1,0 +1,6 @@
+target/
+*.p12
+*.pfx
+*.mp4
+*.pdf
+/*.xml
