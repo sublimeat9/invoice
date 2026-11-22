@@ -1,0 +1,23 @@
+[package]
+name = "invoicing-desktop"
+version = "0.1.0"
+description = "Desktop app for electronic invoicing (SRI Ecuador)"
+edition = "2021"
+
+[lib]
+name = "invoicing_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The same backend as the server, running inside the app: no port, no token, no CORS.
+invoice-rust = { path = "../../backend" }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+rand = "0.8"
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+axum = "0.8"
+tokio = { version = "1", features = ["time"] }

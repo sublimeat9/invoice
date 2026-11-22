@@ -22,3 +22,8 @@ build/
 
 # Certificado de prueba autofirmado (sin valor; contraseña test1234)
 !backend/tests/fixtures/*.p12
+
+# Tauri
+frontend/src-tauri/target/
+frontend/src-tauri/gen/
+frontend/src-tauri/app-icon.png
