@@ -28,8 +28,8 @@ class Session {
 		this.start(await apiLogin(username, password));
 	}
 
-	async register(username: string, password: string) {
-		this.start(await apiRegister(username, password));
+	async register(ruc: string, password: string) {
+		this.start(await apiRegister(ruc, password));
 	}
 
 	async createAdmin(username: string, password: string) {

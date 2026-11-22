@@ -32,6 +32,8 @@ pub struct Service {
     encryption_key: EncryptionKey,
     /// Solo para pruebas: apunta el cliente SOAP a un SRI simulado.
     sri_base: Option<String>,
+    /// Solo para pruebas: apunta la consulta de RUC a un servidor simulado.
+    catastro_base: Option<String>,
 }
 
 /// Configuración vigente, leída de la base en cada operación (así los cambios hechos desde
@@ -91,7 +93,17 @@ impl Service {
             store,
             encryption_key: crypto::derive_key(secret),
             sri_base: None,
+            catastro_base: None,
         }
+    }
+
+    pub fn with_catastro_base(mut self, base: String) -> Self {
+        self.catastro_base = Some(base);
+        self
+    }
+
+    pub fn catastro(&self) -> crate::catastro::CatastroClient {
+        crate::catastro::CatastroClient::new(self.catastro_base.clone())
     }
 
     pub fn con_sri_base(mut self, base: String) -> Self {

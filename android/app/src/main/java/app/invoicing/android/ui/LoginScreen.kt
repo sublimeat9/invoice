@@ -95,7 +95,7 @@ fun LoginScreen(api: ApiClient, settings: SecureSettings, auth: AuthState) {
             OutlinedTextField(url, { url = it }, label = { Text("Server URL") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             TextButton(onClick = { settings.baseUrl = url; checks++ }) { Text("Check connection") }
 
-            OutlinedTextField(username, { username = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(username, { username = it }, label = { Text(if (signingUp) "RUC" else "Username (or RUC)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(password, { password = it }, label = { Text("Password") }, singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth())
@@ -108,7 +108,7 @@ fun LoginScreen(api: ApiClient, settings: SecureSettings, auth: AuthState) {
                 onClick = { settings.baseUrl = url; submit() },
                 enabled = !busy && username.isNotBlank() && password.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text(if (busy) "Please wait…" else if (setupRequired) "Create and sign in" else if (signingUp) "Create account" else "Sign in") }
+            ) { Text(if (busy && signingUp) "Checking with the SRI…" else if (busy) "Please wait…" else if (setupRequired) "Create and sign in" else if (signingUp) "Create account" else "Sign in") }
             if (!setupRequired) {
                 TextButton(onClick = { signingUp = !signingUp; error = null }) {
                     Text(if (signingUp) "I already have an account" else "Create an account")

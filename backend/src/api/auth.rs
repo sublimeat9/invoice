@@ -143,17 +143,31 @@ pub(super) async fn setup(State(st): State<Arc<AppState>>, Json(c): Json<Credent
     }
 }
 
-/// Public sign-up: anyone can create an operator account. The accounts are active right away.
+#[derive(Deserialize)]
+pub(super) struct Registration {
+    ruc: String,
+    password: String,
+}
+
+/// Public sign-up: the RUC is the username. The taxpayer data comes from the SRI, so the
+/// account starts with the real issuer details; it only needs the signature (.p12) afterwards.
 pub(super) async fn register(
     State(st): State<Arc<AppState>>,
-    Json(c): Json<Credentials>,
+    Json(c): Json<Registration>,
 ) -> Response {
+    let ruc = c.ruc.trim().to_string();
     match st.service.store.count_users() {
         Ok(0) => return error(StatusCode::CONFLICT, "primero cree el administrador"),
         Ok(_) => {}
         Err(e) => return account_error(e),
     }
-    // Global cap so the endpoint cannot be used to flood the user table.
+    if let Err(e) = accounts::validate_password(&c.password) {
+        return account_error(e);
+    }
+    if !crate::catastro::valid_shape(&ruc) {
+        return error(StatusCode::BAD_REQUEST, "el RUC debe tener 13 dígitos");
+    }
+    // Global cap so the endpoint cannot be used to flood the user table or the SRI.
     const KEY: &str = "\0register";
     if st.login_throttle.blocked_at(KEY, MAX_REGISTRATIONS) {
         return error(
@@ -161,17 +175,33 @@ pub(super) async fn register(
             "demasiados registros; intente más tarde",
         );
     }
-    match st
+    st.login_throttle.failed(KEY);
+    if matches!(st.service.store.find_login(&ruc), Ok(Some(_))) {
+        return error(StatusCode::CONFLICT, "ya existe una cuenta con ese RUC");
+    }
+    let issuer = match st.service.catastro().lookup(&ruc).await {
+        Ok(i) => i,
+        Err(e @ crate::catastro::CatastroError::Unavailable(_)) => {
+            return error(StatusCode::SERVICE_UNAVAILABLE, &e.to_string())
+        }
+        Err(e) => return error(StatusCode::BAD_REQUEST, &e.to_string()),
+    };
+    let user = match st
         .service
         .store
-        .create_user(&c.username, &c.password, Role::Operator)
+        .create_user(&ruc, &c.password, Role::Operator)
     {
-        Ok(user) => {
-            st.login_throttle.failed(KEY);
-            session_response(&st, user)
-        }
-        Err(e) => account_error(e),
+        Ok(u) => u,
+        Err(e) => return account_error(e),
+    };
+    if let Err(e) =
+        st.service
+            .store
+            .save_issuer(user.id, &issuer, crate::access_key::Environment::Testing)
+    {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
+    session_response(&st, user)
 }
 
 pub(super) async fn login(State(st): State<Arc<AppState>>, Json(c): Json<Credentials>) -> Response {

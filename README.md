@@ -24,8 +24,12 @@ Cada cuenta es un negocio independiente: tiene su propio RUC y datos de emisor, 
 electrónica `.p12`, su ambiente (pruebas o producción), sus productos, clientes, secuenciales y
 comprobantes. Nadie ve los datos de otra cuenta.
 
-Cualquier persona puede crearse una cuenta desde la pantalla de acceso (registro público), y la
-cuenta queda activa de inmediato. Luego carga su RUC y su firma en **Settings** y ya puede emitir.
+Cualquier persona puede crearse una cuenta desde la pantalla de acceso (registro público) con su
+RUC y una contraseña: el RUC es el usuario. Al registrarse se consulta el RUC en el SRI en línea
+(debe existir y estar activo) y el emisor queda precargado con los datos reales: razón social,
+nombre comercial, dirección matriz y obligación de llevar contabilidad. La cuenta queda activa
+de inmediato y solo falta cargar la firma `.p12` en **Settings**. Si el SRI no responde, el
+registro se rechaza en lugar de crear cuentas sin verificar.
 La primera cuenta se crea en la primera ejecución (o con `ADMIN_USER` y `ADMIN_PASSWORD` en un
 servidor) y es administradora: además de su propio negocio, puede ver, desactivar y cambiar el rol
 de las demás cuentas, sin acceso a sus datos de facturación. Las instalaciones de una sola empresa

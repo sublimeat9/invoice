@@ -2,6 +2,7 @@ pub mod access_key;
 pub mod accounts;
 pub mod api;
 pub mod catalog;
+pub mod catastro;
 pub mod crypto;
 pub mod invoice;
 pub mod service;

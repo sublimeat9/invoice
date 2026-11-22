@@ -47,6 +47,43 @@ async fn mock_sri(down: bool) -> String {
     base
 }
 
+/// SRI en línea simulado: conoce el RUC 1790011674001 (activo) y el 1790011675001 (suspendido).
+async fn mock_catastro() -> String {
+    use axum::{extract::Query, routing::get, Json};
+    use std::collections::HashMap;
+    let app = Router::new()
+        .route(
+            "/ConsolidadoContribuyente/obtenerPorNumerosRuc",
+            get(|Query(q): Query<HashMap<String, String>>| async move {
+                let ruc = q.get("ruc").cloned().unwrap_or_default();
+                Json(match ruc.as_str() {
+                    "1790011674001" => serde_json::json!([{
+                        "numeroRuc": ruc, "razonSocial": "ANA PEREZ", "nombreComercial": "TIENDA ANA",
+                        "estadoContribuyenteRuc": "ACTIVO", "obligadoLlevarContabilidad": "SI"
+                    }]),
+                    "1790011675001" => serde_json::json!([{
+                        "numeroRuc": ruc, "razonSocial": "SUSPENDIDO SA",
+                        "estadoContribuyenteRuc": "SUSPENDIDO"
+                    }]),
+                    _ => serde_json::json!([]),
+                })
+            }),
+        )
+        .route(
+            "/Establecimiento/consultarPorNumeroRuc",
+            get(|| async {
+                Json(serde_json::json!([
+                    {"numeroEstablecimiento": "002", "direccionCompleta": "SUCURSAL", "matriz": "NO"},
+                    {"numeroEstablecimiento": "001", "direccionCompleta": "AV. AMAZONAS Y NNUU, QUITO", "matriz": "SI"}
+                ]))
+            }),
+        );
+    let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", l.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+    base
+}
+
 const P12: &[u8] = include_bytes!("fixtures/test.p12");
 
 fn issuer() -> Issuer {
@@ -84,7 +121,8 @@ async fn app(sri_base: String) -> (Router, Arc<AppState>, String) {
 /// App without issuer or certificate, plus the token of a signed-in administrator.
 async fn app_unconfigured(sri_base: String) -> (Router, Arc<AppState>, String) {
     let service = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba")
-        .con_sri_base(sri_base);
+        .con_sri_base(sri_base)
+        .with_catastro_base(mock_catastro().await);
     let st = Arc::new(AppState::new(service));
     st.service
         .store
@@ -817,9 +855,10 @@ async fn users_can_change_their_own_password() {
 
 #[tokio::test]
 async fn public_registration_creates_active_operators() {
-    let service = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba");
+    let service = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba")
+        .with_catastro_base(mock_catastro().await);
     let app = router(Arc::new(AppState::new(service)));
-    let body = r#"{"username":"ana","password":"ana-password-1"}"#;
+    let body = r#"{"ruc":"1790011674001","password":"ana-password-1"}"#;
     // Before the administrator exists, sign-up is refused.
     let r = app
         .clone()
@@ -842,7 +881,24 @@ async fn public_registration_creates_active_operators() {
     .await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["user"]["role"], "operator");
+    assert_eq!(v["user"]["username"], "1790011674001");
     let token = v["token"].as_str().unwrap();
+    // The issuer comes pre-filled with the SRI's real data.
+    let (_, cfg) = json(
+        app.clone()
+            .oneshot(req("GET", "/config", Some(token), None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(cfg["issuer"]["business_name"], "ANA PEREZ");
+    assert_eq!(cfg["issuer"]["trade_name"], "TIENDA ANA");
+    assert_eq!(
+        cfg["issuer"]["head_office_address"],
+        "AV. AMAZONAS Y NNUU, QUITO"
+    );
+    assert_eq!(cfg["issuer"]["accounting_required"], true);
+    assert_eq!(cfg["certificate"]["loaded"], false);
     let r = app
         .clone()
         .oneshot(req("GET", "/products", Some(token), None))
@@ -862,20 +918,55 @@ async fn public_registration_creates_active_operators() {
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::CONFLICT);
-    let weak = r#"{"username":"bob","password":"short"}"#;
+    for bad in [
+        r#"{"ruc":"1790011676001","password":"short-but-8chars"}"#, // not in the SRI
+        r#"{"ruc":"1790011675001","password":"long-enough-password"}"#, // suspended
+        r#"{"ruc":"123","password":"long-enough-password"}"#,       // bad shape
+        r#"{"ruc":"1790011674001","password":"short"}"#,            // weak password
+    ] {
+        let r = app
+            .clone()
+            .oneshot(req("POST", "/auth/register", None, Some(bad)))
+            .await
+            .unwrap();
+        assert!(
+            r.status() == StatusCode::BAD_REQUEST || r.status() == StatusCode::CONFLICT,
+            "{bad}: {}",
+            r.status()
+        );
+    }
     let r = app
         .clone()
-        .oneshot(req("POST", "/auth/register", None, Some(weak)))
+        .oneshot(req(
+            "POST",
+            "/auth/register",
+            None,
+            Some(r#"{"ruc":"1790011676001","password":"long-enough-password"}"#),
+        ))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+    // With the SRI unreachable, sign-up is refused rather than creating unverified accounts.
+    let down = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba")
+        .with_catastro_base("http://127.0.0.1:1".into());
+    let app2 = router(Arc::new(AppState::new(down)));
+    app2.clone()
+        .oneshot(req("POST", "/auth/setup", None, Some(admin)))
+        .await
+        .unwrap();
+    let r = app2
+        .oneshot(req("POST", "/auth/register", None, Some(body)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
 async fn each_account_only_sees_its_own_business() {
     let (app, st, boss) = app(mock_sri(false).await).await;
     // A second business signs up.
-    let body = r#"{"username":"ana","password":"ana-password-1"}"#;
+    let body = r#"{"ruc":"1790011674001","password":"ana-password-1"}"#;
     let ana = json(
         app.clone()
             .oneshot(req("POST", "/auth/register", None, Some(body)))
@@ -897,7 +988,9 @@ async fn each_account_only_sees_its_own_business() {
     )
     .await;
     assert_eq!(cfg["ready"], false);
-    assert!(cfg["issuer"].is_null());
+    // Her issuer details came from the SRI, but she has no signature yet.
+    assert_eq!(cfg["issuer"]["ruc"], "1790011674001");
+    assert_eq!(cfg["certificate"]["loaded"], false);
     let (_, cfg) = json(
         app.clone()
             .oneshot(req("GET", "/config", Some(&boss), None))
@@ -992,7 +1085,14 @@ async fn each_account_only_sees_its_own_business() {
     assert_eq!(r.status(), StatusCode::CREATED);
 
     // Sequences are per business.
-    let ana_id = st.service.store.find_login("ana").unwrap().unwrap().0.id;
+    let ana_id = st
+        .service
+        .store
+        .find_login("1790011674001")
+        .unwrap()
+        .unwrap()
+        .0
+        .id;
     let s = &st.service.store;
     assert_eq!(
         s.reserve_sequence(ana_id, Environment::Testing, "001", "001")

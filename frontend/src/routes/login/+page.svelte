@@ -44,8 +44,9 @@
 		{#if error}<div class="notice error">{error}</div>{/if}
 		<div class="row" style="grid-template-columns: 1fr">
 			<div>
-				<label for="username">Username</label>
-				<input id="username" autocomplete="username" autocapitalize="none" bind:value={username} required />
+				<label for="username">{signingUp ? 'RUC' : 'Username (or RUC)'}</label>
+				<input id="username" autocomplete="username" autocapitalize="none" inputmode={signingUp ? 'numeric' : 'text'} maxlength={signingUp ? 13 : undefined} bind:value={username} required />
+				{#if signingUp}<p class="hint">Your business data is fetched from the SRI. Afterwards you only need to upload your signature (.p12).</p>{/if}
 			</div>
 			<div>
 				<label for="password">Password</label>
@@ -59,7 +60,7 @@
 			{/if}
 		</div>
 		<div class="actions" style="margin-top: 1rem">
-			<button disabled={busy}>{busy ? 'Please wait…' : data.setupRequired ? 'Create and sign in' : 'Sign in'}</button>
+			<button disabled={busy}>{busy ? (signingUp ? 'Checking with the SRI…' : 'Please wait…') : data.setupRequired ? 'Create and sign in' : 'Sign in'}</button>
 			{#if !data.setupRequired}
 				<button type="button" class="secondary" onclick={() => { signingUp = !signingUp; error = null; }}>
 					{signingUp ? 'I already have an account' : 'Create an account'}

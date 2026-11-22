@@ -148,8 +148,9 @@ export const authStatus = () => call<{ setup_required: boolean }>('/auth/status'
 export const setupAdmin = (username: string, password: string) =>
 	call<Login>('/auth/setup', { method: 'POST', body: { username, password } });
 
-export const register = (username: string, password: string) =>
-	call<Login>('/auth/register', { method: 'POST', body: { username, password } });
+/** Public sign-up: the RUC is the username and the issuer data is fetched from the SRI. */
+export const register = (ruc: string, password: string) =>
+	call<Login>('/auth/register', { method: 'POST', body: { ruc, password } });
 
 export const login = (username: string, password: string) =>
 	call<Login>('/auth/login', { method: 'POST', body: { username, password } });

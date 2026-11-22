@@ -82,9 +82,9 @@ class ApiClient(
         JSONObject(request("POST", "/auth/setup", JSONObject().put("username", username).put("password", password))),
     )
 
-    /** Public sign-up: creates an operator account and signs in. */
-    suspend fun register(username: String, password: String): LoginResult = LoginResult.from(
-        JSONObject(request("POST", "/auth/register", JSONObject().put("username", username).put("password", password))),
+    /** Public sign-up: the RUC is the username; the issuer data is fetched from the SRI. */
+    suspend fun register(ruc: String, password: String): LoginResult = LoginResult.from(
+        JSONObject(request("POST", "/auth/register", JSONObject().put("ruc", ruc).put("password", password))),
     )
 
     suspend fun logout() {
