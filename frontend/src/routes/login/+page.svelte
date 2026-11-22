@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
-	import { errorMessage } from '#lib/api.ts';
+	import { errorMessage, inTauri } from '#lib/api.ts';
 	import { session } from '#lib/session.svelte.ts';
 	import type { PageProps } from './$types';
 
@@ -10,8 +10,13 @@
 	let confirm = $state('');
 	let busy = $state(false);
 	// Without an administrator yet the page can only create one; otherwise it toggles sign in / sign up.
-	let signingUp = $state(false);
+	// svelte-ignore state_referenced_locally
+	// On the desktop app the first account is the business owner, so it starts with the RUC form.
+	let signingUp = $state(inTauri() && data.setupRequired);
 	const creating = $derived(data.setupRequired || signingUp);
+	const heading = $derived(
+		signingUp ? 'Create an account' : data.setupRequired ? 'Create the administrator' : 'Sign in'
+	);
 	let error = $state<string | null>(null);
 
 	async function submit(event: SubmitEvent) {
@@ -23,8 +28,8 @@
 		}
 		busy = true;
 		try {
-			if (data.setupRequired) await session.createAdmin(username, password);
-			else if (signingUp) await session.register(username, password);
+			if (signingUp) await session.register(username, password);
+			else if (data.setupRequired) await session.createAdmin(username, password);
 			else await session.signIn(username, password);
 			await goto('/');
 		} catch (e) {
@@ -36,9 +41,9 @@
 
 <div class="login">
 	<form class="card" onsubmit={submit}>
-		<h1>{data.setupRequired ? 'Create the administrator' : signingUp ? 'Create an account' : 'Sign in'}</h1>
-		{#if data.setupRequired}
-			<p class="hint">First run: this account manages settings, the certificate and the other users.</p>
+		<h1>{heading}</h1>
+		{#if data.setupRequired && !signingUp}
+			<p class="hint">First run: this account manages the accounts of this server.</p>
 		{/if}
 		{#if data.unreachable}<div class="notice error">Could not reach the server.</div>{/if}
 		{#if error}<div class="notice error">{error}</div>{/if}
@@ -60,12 +65,14 @@
 			{/if}
 		</div>
 		<div class="actions" style="margin-top: 1rem">
-			<button disabled={busy}>{busy ? (signingUp ? 'Checking with the SRI…' : 'Please wait…') : data.setupRequired ? 'Create and sign in' : 'Sign in'}</button>
-			{#if !data.setupRequired}
-				<button type="button" class="secondary" onclick={() => { signingUp = !signingUp; error = null; }}>
+			<button disabled={busy}>{busy ? (signingUp ? 'Checking with the SRI…' : 'Please wait…') : signingUp ? 'Create account' : data.setupRequired ? 'Create and sign in' : 'Sign in'}</button>
+			<button type="button" class="secondary" onclick={() => { signingUp = !signingUp; error = null; }}>
+				{#if data.setupRequired}
+					{signingUp ? 'Create a plain administrator instead' : 'Register with my RUC instead'}
+				{:else}
 					{signingUp ? 'I already have an account' : 'Create an account'}
-				</button>
-			{/if}
+				{/if}
+			</button>
 		</div>
 	</form>
 </div>

@@ -149,18 +149,19 @@ pub(super) struct Registration {
     password: String,
 }
 
-/// Public sign-up: the RUC is the username. The taxpayer data comes from the SRI, so the
+/// Public sign-up: the RUC is the username (the first account becomes the administrator). The taxpayer data comes from the SRI, so the
 /// account starts with the real issuer details; it only needs the signature (.p12) afterwards.
 pub(super) async fn register(
     State(st): State<Arc<AppState>>,
     Json(c): Json<Registration>,
 ) -> Response {
     let ruc = c.ruc.trim().to_string();
-    match st.service.store.count_users() {
-        Ok(0) => return error(StatusCode::CONFLICT, "primero cree el administrador"),
-        Ok(_) => {}
+    // The very first account (a desktop install, say) becomes the administrator.
+    let role = match st.service.store.count_users() {
+        Ok(0) => Role::Admin,
+        Ok(_) => Role::Operator,
         Err(e) => return account_error(e),
-    }
+    };
     if let Err(e) = accounts::validate_password(&c.password) {
         return account_error(e);
     }
@@ -186,11 +187,7 @@ pub(super) async fn register(
         }
         Err(e) => return error(StatusCode::BAD_REQUEST, &e.to_string()),
     };
-    let user = match st
-        .service
-        .store
-        .create_user(&ruc, &c.password, Role::Operator)
-    {
+    let user = match st.service.store.create_user(&ruc, &c.password, role) {
         Ok(u) => u,
         Err(e) => return account_error(e),
     };

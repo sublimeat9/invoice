@@ -57,7 +57,7 @@ async fn mock_catastro() -> String {
             get(|Query(q): Query<HashMap<String, String>>| async move {
                 let ruc = q.get("ruc").cloned().unwrap_or_default();
                 Json(match ruc.as_str() {
-                    "1790011674001" => serde_json::json!([{
+                    "1790011674001" | "1790011677001" => serde_json::json!([{
                         "numeroRuc": ruc, "razonSocial": "ANA PEREZ", "nombreComercial": "TIENDA ANA",
                         "estadoContribuyenteRuc": "ACTIVO", "obligadoLlevarContabilidad": "SI"
                     }]),
@@ -859,19 +859,18 @@ async fn public_registration_creates_active_operators() {
         .with_catastro_base(mock_catastro().await);
     let app = router(Arc::new(AppState::new(service)));
     let body = r#"{"ruc":"1790011674001","password":"ana-password-1"}"#;
-    // Before the administrator exists, sign-up is refused.
-    let r = app
-        .clone()
-        .oneshot(req("POST", "/auth/register", None, Some(body)))
-        .await
-        .unwrap();
-    assert_eq!(r.status(), StatusCode::CONFLICT);
-    let admin = r#"{"username":"boss","password":"long-enough-password"}"#;
-    app.clone()
-        .oneshot(req("POST", "/auth/setup", None, Some(admin)))
-        .await
-        .unwrap();
-
+    // With no users at all, the first RUC sign-up becomes the administrator.
+    let first = r#"{"ruc":"1790011677001","password":"first-password-1"}"#;
+    let (s0, v0) = json(
+        app.clone()
+            .oneshot(req("POST", "/auth/register", None, Some(first)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s0, StatusCode::OK, "{v0}");
+    assert_eq!(v0["user"]["role"], "admin");
+    // Setup is closed now; the next sign-ups are regular accounts.
     let (s, v) = json(
         app.clone()
             .oneshot(req("POST", "/auth/register", None, Some(body)))
@@ -951,6 +950,7 @@ async fn public_registration_creates_active_operators() {
     let down = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba")
         .with_catastro_base("http://127.0.0.1:1".into());
     let app2 = router(Arc::new(AppState::new(down)));
+    let admin = r#"{"username":"boss","password":"long-enough-password"}"#;
     app2.clone()
         .oneshot(req("POST", "/auth/setup", None, Some(admin)))
         .await
