@@ -27,3 +27,14 @@ build/
 frontend/src-tauri/target/
 frontend/src-tauri/gen/
 frontend/src-tauri/app-icon.png
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.kotlin/
+*.apk
+*.aab
+*.jks
+*.keystore
