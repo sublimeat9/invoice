@@ -1,16 +1,13 @@
 import { defineEnvVars } from '@sveltejs/kit/env';
 
-// Variables privadas (solo servidor), leídas al arrancar la app.
+// Private variables (server only). The desktop build does not use them at all.
 export const variables = defineEnvVars({
 	API_TOKEN: {
-		description: 'Token Bearer del backend; nunca se envía al navegador',
-		schema: (value) => {
-			if (!value || value.length < 16) throw new Error('API_TOKEN debe tener al menos 16 caracteres');
-			return value;
-		}
+		description: 'Backend Bearer token; never sent to the browser',
+		schema: (value) => value ?? ''
 	},
 	BACKEND_URL: {
-		description: 'URL base del backend Rust',
+		description: 'Base URL of the Rust backend',
 		schema: (value) => (value ? value.replace(/\/+$/, '') : 'http://127.0.0.1:3000')
 	}
 });

@@ -1,8 +1,11 @@
-import adapter from '@sveltejs/adapter-auto';
+import adapterNode from '@sveltejs/adapter-node';
+import adapterStatic from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { defineConfig } from 'vite';
 
-export default defineConfig({
+// `vite build --mode tauri` produces the static bundle embedded in the desktop app;
+// any other mode produces the Node server for the web (with the `/api` proxy).
+export default defineConfig(({ mode }) => ({
 	plugins: [
 		sveltekit({
 			compilerOptions: {
@@ -10,11 +13,9 @@ export default defineConfig({
 				runes: ({ filename }) =>
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
-
-			// adapter-auto only supports some environments, see https://svelte.dev/docs/kit/adapter-auto for a list.
-			// If your environment is not supported, or you settled on a specific environment, switch out the adapter.
-			// See https://svelte.dev/docs/kit/adapters for more information about adapters.
-			adapter: adapter()
+			adapter: mode === 'tauri' ? adapterStatic({ fallback: 'index.html' }) : adapterNode()
 		})
-	]
-});
+	],
+	// Tauri expects a fixed port in dev mode.
+	server: mode === 'tauri' ? { port: 1420, strictPort: true } : undefined
+}));
