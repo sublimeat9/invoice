@@ -57,35 +57,65 @@ export const inTauri = () => typeof window !== 'undefined' && '__TAURI_INTERNALS
 
 type RawResponse = { status: number; body: string };
 
+/** Called when the server says the session is no longer valid (set by the session module). */
+let onUnauthorized: () => void = () => {};
+export const setUnauthorizedHandler = (handler: () => void) => (onUnauthorized = handler);
+
+const SESSION_KEY = 'session';
+
+/** The signed-in session, kept in localStorage so it survives restarts. */
+export type StoredSession = { token: string; expires_at: number; user: User };
+
+export function readSession(): StoredSession | null {
+	try {
+		const raw = localStorage.getItem(SESSION_KEY);
+		if (!raw) return null;
+		const s = JSON.parse(raw) as StoredSession;
+		return s.expires_at * 1000 > Date.now() ? s : null;
+	} catch {
+		return null;
+	}
+}
+
+export function writeSession(s: StoredSession | null) {
+	try {
+		if (s) localStorage.setItem(SESSION_KEY, JSON.stringify(s));
+		else localStorage.removeItem(SESSION_KEY);
+	} catch {
+		/* storage unavailable: the session just won't persist */
+	}
+}
+
 async function transport(method: string, path: string, body?: string): Promise<RawResponse> {
+	const token = readSession()?.token ?? null;
 	if (inTauri()) {
 		const { invoke } = await import('@tauri-apps/api/core');
 		try {
-			return await invoke<RawResponse>('api', { method, path, body: body ?? null });
+			return await invoke<RawResponse>('api', { method, path, body: body ?? null, token });
 		} catch (e) {
 			throw new ApiError(500, String(e));
 		}
 	}
+	const headers: Record<string, string> = {};
+	if (body) headers['content-type'] = 'application/json';
+	if (token) headers.authorization = `Bearer ${token}`;
 	let res: Response;
 	try {
-		res = await fetch(`/api${path}`, {
-			method,
-			headers: body ? { 'content-type': 'application/json' } : {},
-			body
-		});
+		res = await fetch(`/api${path}`, { method, headers, body });
 	} catch {
 		throw new ApiError(503, 'Could not reach the server');
 	}
 	return { status: res.status, body: await res.text() };
 }
 
-function parse<T>(r: RawResponse): T {
+function parse<T>(r: RawResponse, isLoginPath = false): T {
 	let data: unknown = null;
 	try {
 		data = r.body ? JSON.parse(r.body) : null;
 	} catch {
 		/* non-JSON body (e.g. CSV) is handled by the caller */
 	}
+	if (r.status === 401 && !isLoginPath) onUnauthorized();
 	if (r.status < 200 || r.status >= 300) {
 		const message = (data as { error?: string } | null)?.error;
 		throw new ApiError(r.status, message ?? `Error ${r.status}`);
@@ -95,7 +125,9 @@ function parse<T>(r: RawResponse): T {
 
 async function call<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
 	const body = init.body === undefined ? undefined : JSON.stringify(init.body);
-	return parse<T>(await transport(init.method ?? 'GET', path, body));
+	// A wrong password also answers 401: that must not be taken as an expired session.
+	const isLoginPath = path === '/auth/login' || path === '/auth/setup' || path === '/auth/register';
+	return parse<T>(await transport(init.method ?? 'GET', path, body), isLoginPath);
 }
 
 export function queryString(params: Record<string, string | number | undefined>): string {
@@ -104,6 +136,36 @@ export function queryString(params: Record<string, string | number | undefined>)
 	const s = p.toString();
 	return s ? `?${s}` : '';
 }
+
+// ---------- accounts ----------
+
+export type Role = 'admin' | 'operator';
+export type User = { id: number; username: string; role: Role; active: boolean };
+export type Login = { token: string; expires_at: number; user: User };
+
+export const authStatus = () => call<{ setup_required: boolean }>('/auth/status');
+
+export const setupAdmin = (username: string, password: string) =>
+	call<Login>('/auth/setup', { method: 'POST', body: { username, password } });
+
+export const register = (username: string, password: string) =>
+	call<Login>('/auth/register', { method: 'POST', body: { username, password } });
+
+export const login = (username: string, password: string) =>
+	call<Login>('/auth/login', { method: 'POST', body: { username, password } });
+
+export const logoutRequest = () => call<null>('/auth/logout', { method: 'POST' });
+
+export const changePassword = (current_password: string, new_password: string) =>
+	call<null>('/auth/password', { method: 'PUT', body: { current_password, new_password } });
+
+export const users = {
+	list: () => call<User[]>('/users'),
+	create: (u: { username: string; password: string; role: Role }) =>
+		call<User>('/users', { method: 'POST', body: u }),
+	update: (id: number, changes: { role?: Role; active?: boolean; password?: string }) =>
+		call<User>(`/users/${id}`, { method: 'PUT', body: changes })
+};
 
 // ---------- invoices ----------
 
@@ -123,6 +185,7 @@ export const searchInvoices = (s: InvoiceSearch) =>
 /** CSV report with the same filters (the backend caps it at 10,000 rows). */
 export async function invoiceReportCsv(s: InvoiceSearch): Promise<string> {
 	const r = await transport('GET', `/invoices/report.csv${queryString(s)}`);
+	if (r.status === 401) onUnauthorized();
 	if (r.status !== 200) throw new ApiError(r.status, `Error ${r.status}`);
 	return r.body;
 }

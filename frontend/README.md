@@ -5,18 +5,18 @@ con el backend pasa por `src/lib/api.ts`, que elige el transporte:
 
 | Entorno | Transporte |
 |---------|------------|
-| Web | `fetch('/api/*')` → `src/hooks.server.ts` lo reenvía al backend con el token (nunca llega al navegador) |
+| Web | `fetch('/api/*')` → `src/hooks.server.ts` lo reenvía al backend con el token de sesión del usuario |
 | Tauri | `invoke('api')` → el router del backend dentro del mismo proceso |
 
 ## Desarrollo
 ```
-cp .env.example .env     # mismo API_TOKEN que el backend
+cp .env.example .env
 pnpm install
 pnpm dev                 # web
 pnpm tauri dev           # escritorio
 ```
 
-Variables (solo servidor web): `API_TOKEN` (≥16 caracteres) y `BACKEND_URL`
+Variable (solo servidor web): `BACKEND_URL`
 (por defecto `http://127.0.0.1:3000`).
 
 ## Compilación

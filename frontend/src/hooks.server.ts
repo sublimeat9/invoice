@@ -1,26 +1,21 @@
-import { API_TOKEN, BACKEND_URL } from '$app/env/private';
+import { BACKEND_URL } from '$app/env/private';
 import type { Handle } from '@sveltejs/kit/hooks';
 
 const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'PATCH']);
 
 /**
- * Web mode: the browser talks to `/api/*` and this hook forwards the call to the backend adding
- * the Bearer token, so the token never reaches the browser.
+ * Web mode: the browser talks to `/api/*` and this hook forwards the call to the backend,
+ * passing along the user's session token. The server holds no credentials of its own.
  */
 export const handle: Handle = async ({ event, resolve }) => {
 	if (!event.url.pathname.startsWith('/api/')) return resolve(event);
 
-	if (API_TOKEN.length < 16) {
-		return new Response(JSON.stringify({ error: 'API_TOKEN is not configured on the server' }), {
-			status: 500,
-			headers: { 'content-type': 'application/json' }
-		});
-	}
-
 	const path = event.url.pathname.slice('/api'.length) + event.url.search;
-	const headers = new Headers({ authorization: `Bearer ${API_TOKEN}` });
-	const contentType = event.request.headers.get('content-type');
-	if (contentType) headers.set('content-type', contentType);
+	const headers = new Headers();
+	for (const name of ['authorization', 'content-type']) {
+		const value = event.request.headers.get(name);
+		if (value) headers.set(name, value);
+	}
 
 	try {
 		const upstream = await fetch(`${BACKEND_URL}${path}`, {

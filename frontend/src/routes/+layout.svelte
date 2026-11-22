@@ -2,6 +2,7 @@
 	import favicon from '#lib/assets/favicon.svg';
 	import { page } from '$app/state';
 	import type { LayoutProps } from './$types';
+	import { session } from '#lib/session.svelte.ts';
 	import './styles.css';
 
 	let { children, data }: LayoutProps = $props();
@@ -14,6 +15,9 @@
 	<title>Electronic invoicing</title>
 </svelte:head>
 
+{#if page.url.pathname === '/login'}
+	{@render children()}
+{:else}
 <div class="app">
 	<aside class="sidebar">
 		<a href="/" class="brand"><span class="logo">F</span> Invoicing</a>
@@ -48,7 +52,24 @@
 				</svg>
 				Settings
 			</a>
+			{#if session.isAdmin}
+				<a href="/users" aria-current={section('/users')}>
+					<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+						<circle cx="6" cy="5.5" r="2" /><path d="M2 13c.4-2.2 2-3.5 4-3.5s3.6 1.3 4 3.5 M11 4a2 2 0 0 1 0 3.6 M12 9.8c1.1.5 1.8 1.5 2 3.2" />
+					</svg>
+					Users
+				</a>
+			{/if}
 		</nav>
+		{#if session.user}
+			<div class="account">
+				<a href="/account" aria-current={exact('/account')}>
+					<strong>{session.user.username}</strong>
+					<span>{session.user.role === 'admin' ? 'Administrator' : 'Member'}</span>
+				</a>
+				<button class="secondary small" onclick={() => session.signOut()}>Log out</button>
+			</div>
+		{/if}
 		{#if data.environment}
 			<span class="environment {data.environment}">{data.environment === 'production' ? 'Production' : 'Test'}</span>
 		{/if}
@@ -56,10 +77,11 @@
 	<main class="content">
 		{#if data.configReady === false && page.url.pathname !== '/settings'}
 			<div class="notice">
-				<span>Setup is incomplete: add the issuer details and a certificate before issuing invoices.</span>
+				<span>Setup is incomplete: add your RUC details and your signature (.p12) before issuing invoices.</span>
 				<a class="btn secondary small" href="/settings">Go to settings</a>
 			</div>
 		{/if}
 		{@render children()}
 	</main>
 </div>
+{/if}

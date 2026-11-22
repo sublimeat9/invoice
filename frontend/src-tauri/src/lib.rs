@@ -1,7 +1,8 @@
 //! Desktop shell: the web interface plus the backend running in the same process.
 //!
 //! The interface calls the `api` command, which dispatches straight into the backend router
-//! (see `invoice_rust::api::dispatch`). There is no listening port and no shared token.
+//! (see `invoice_rust::api::dispatch`). There is no listening port: users sign in like anywhere
+//! else, and the interface passes its session token with every call.
 
 mod secret;
 
@@ -10,7 +11,6 @@ use invoice_rust::{
     service::Service,
     store::Store,
 };
-use rand::RngCore;
 use serde::Serialize;
 use std::{sync::Arc, time::Duration};
 use tauri::{Manager, State};
@@ -18,8 +18,6 @@ use tauri_plugin_dialog::DialogExt;
 
 struct Backend {
     router: axum::Router,
-    /// Random on every launch: it only authenticates the in-process calls.
-    token: String,
 }
 
 #[derive(Serialize)]
@@ -34,9 +32,16 @@ async fn api(
     method: String,
     path: String,
     body: Option<String>,
+    token: Option<String>,
 ) -> Result<ApiResponse, String> {
-    let (status, body) =
-        dispatch(backend.router.clone(), &backend.token, &method, &path, body).await?;
+    let (status, body) = dispatch(
+        backend.router.clone(),
+        token.as_deref(),
+        &method,
+        &path,
+        body,
+    )
+    .await?;
     Ok(ApiResponse { status, body })
 }
 
@@ -60,12 +65,6 @@ async fn save_file(app: tauri::AppHandle, name: String, content: String) -> Resu
     .map_err(|e| e.to_string())?
 }
 
-fn random_token() -> String {
-    let mut bytes = [0u8; 24];
-    rand::thread_rng().fill_bytes(&mut bytes);
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -76,24 +75,19 @@ pub fn run() {
             let db_path = data_dir.join("invoices.db");
             let store = Store::open(db_path.to_str().ok_or("invalid data directory")?)?;
 
-            let token = random_token();
-            let state = Arc::new(AppState {
-                service: Service::new(store, &secret),
-                token: token.clone(),
-            });
+            let state = Arc::new(AppState::new(Service::new(store, &secret)));
 
             // Same background retry as the server: every 5 minutes.
             let background = state.clone();
             tauri::async_runtime::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(300)).await;
-                    let _ = background.service.retry_pending().await;
+                    let _ = background.service.retry_pending(None).await;
                 }
             });
 
             app.manage(Backend {
                 router: router(state),
-                token,
             });
             Ok(())
         })
