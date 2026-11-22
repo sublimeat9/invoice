@@ -1,7 +1,10 @@
+pub mod access_key;
 pub mod api;
-pub mod clave_acceso;
-pub mod factura;
-pub mod firma;
-pub mod servicio;
+pub mod catalog;
+pub mod crypto;
+pub mod invoice;
+pub mod service;
+pub mod settings;
+pub mod signing;
 pub mod sri;
 pub mod store;
