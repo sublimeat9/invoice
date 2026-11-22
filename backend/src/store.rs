@@ -123,6 +123,17 @@ impl Store {
             .optional()?)
     }
 
+    /// Últimos comprobantes (más recientes primero), sin el XML para aligerar la respuesta.
+    pub fn listar(&self, limite: u32) -> Result<Vec<Registro>, StoreError> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c.prepare(
+            "SELECT clave_acceso, secuencial, estado, '', numero_autorizacion, fecha_autorizacion, mensajes
+             FROM comprobantes ORDER BY creado DESC, secuencial DESC LIMIT ?1",
+        )?;
+        let v = st.query_map(params![limite], fila)?.collect::<Result<Vec<_>, _>>()?;
+        Ok(v)
+    }
+
     pub fn pendientes(&self) -> Result<Vec<Registro>, StoreError> {
         let c = self.conn.lock().unwrap();
         let mut st = c.prepare(&format!("{SELECT} WHERE estado='PENDIENTE' ORDER BY secuencial"))?;
@@ -176,5 +187,11 @@ mod tests {
         assert!(s.pendientes().unwrap().is_empty());
         assert!(s.obtener("nada").unwrap().is_none());
         assert!(s.guardar_pendiente("K1", 2, "<y/>").is_err());
+        s.guardar_pendiente("K2", 2, "<z/>").unwrap();
+        let l = s.listar(10).unwrap();
+        assert_eq!(l.len(), 2);
+        assert_eq!(l[0].clave_acceso, "K2");
+        assert!(l.iter().all(|r| r.xml_firmado.is_empty()));
+        assert_eq!(s.listar(1).unwrap().len(), 1);
     }
 }

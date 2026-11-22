@@ -2,10 +2,16 @@
 
 Facturación electrónica para el SRI de Ecuador.
 
-- `backend/`: lógica en Rust (clave de acceso, XML, firma XAdES-BES, cliente SOAP del SRI,
-  persistencia SQLite). Ver `backend/examples/` para ejemplos de uso.
-- `frontend/`: cliente SvelteKit que consumirá la API del backend (pendiente).
+- `backend/`: Rust (clave de acceso, XML, firma XAdES-BES, cliente SOAP del SRI, SQLite y
+  API HTTP con axum). Ejemplos en `backend/examples/`.
+- `frontend/`: SvelteKit; consume la API del backend desde el servidor.
 
+## Arranque local
 ```
-cd backend && cargo test
+# 1) backend (desde backend/): ver variables en src/main.rs
+cargo run
+
+# 2) frontend (desde frontend/)
+pnpm dev
 ```
+Pruebas: `cd backend && cargo test` · `cd frontend && pnpm check`

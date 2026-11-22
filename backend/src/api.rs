@@ -1,6 +1,7 @@
 //! API HTTP (JSON) sobre `Servicio`.
 //!
 //! - `GET  /health`                 sin autenticación
+//! - `GET  /facturas`               últimos 50 comprobantes (sin XML)
 //! - `POST /facturas`               emite una factura (201 si hay resultado final, 202 si quedó PENDIENTE)
 //! - `GET  /facturas/{clave}`       estado guardado + XML firmado
 //! - `POST /facturas/reintentar`    reenvía las PENDIENTE
@@ -30,7 +31,7 @@ pub struct AppState {
 
 pub fn router(state: Arc<AppState>) -> Router {
     let protegidas = Router::new()
-        .route("/facturas", post(emitir))
+        .route("/facturas", post(emitir).get(listar))
         .route("/facturas/reintentar", post(reintentar))
         .route("/facturas/{clave}", get(obtener))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
@@ -214,5 +215,12 @@ async fn reintentar(State(st): State<Arc<AppState>>) -> Response {
             Json(out).into_response()
         }
         Err(e) => error_servicio(e),
+    }
+}
+
+async fn listar(State(st): State<Arc<AppState>>) -> Response {
+    match st.servicio.store.listar(50) {
+        Ok(v) => Json(v.into_iter().map(|r| RegistroDto::de(r, false)).collect::<Vec<_>>()).into_response(),
+        Err(e) => error_servicio(e.into()),
     }
 }

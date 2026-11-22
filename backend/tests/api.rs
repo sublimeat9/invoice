@@ -106,6 +106,11 @@ async fn emitir_y_consultar() {
     assert_eq!(s, StatusCode::OK);
     assert!(g["xml_firmado"].as_str().unwrap().contains("<ds:Signature"));
 
+    let (s, l) = json(app.clone().oneshot(req("GET", "/facturas", Some(TOKEN), None)).await.unwrap()).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(l.as_array().unwrap().len(), 1);
+    assert!(l[0].get("xml_firmado").is_none());
+
     // El secuencial avanza.
     let (_, v2) = json(app.oneshot(req("POST", "/facturas", Some(TOKEN), Some(FACTURA))).await.unwrap()).await;
     assert_eq!(v2["secuencial"], 2);
