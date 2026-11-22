@@ -4,12 +4,13 @@ use super::{
     errors::{error, service_error},
     AppState,
 };
+use crate::accounts::User;
 use crate::catalog::{CatalogError, Customer, Product};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -90,31 +91,31 @@ pub(super) fn validate_customer(mut c: Customer) -> Result<Customer, String> {
 macro_rules! catalog {
     ($Ty:ty, $validate:ident, $list:ident, $create:ident, $view:ident, $edit:ident, $remove:ident,
      $search:ident, $insert:ident, $get_record:ident, $update:ident, $delete:ident) => {
-        pub(super) async fn $list(State(st): State<Arc<AppState>>, Query(q): Query<CatalogQuery>) -> Response {
-            match st.service.store.$search(q.q.as_deref(), q.limit.unwrap_or(50), q.page.unwrap_or(1)) {
+        pub(super) async fn $list(State(st): State<Arc<AppState>>, Extension(me): Extension<User>, Query(q): Query<CatalogQuery>) -> Response {
+            match st.service.store.$search(me.id, q.q.as_deref(), q.limit.unwrap_or(50), q.page.unwrap_or(1)) {
                 Ok((items, total)) => Json(serde_json::json!({ "total": total, "items": items })).into_response(),
                 Err(e) => catalog_error(e),
             }
         }
-        pub(super) async fn $create(State(st): State<Arc<AppState>>, Json(x): Json<$Ty>) -> Response {
+        pub(super) async fn $create(State(st): State<Arc<AppState>>, Extension(me): Extension<User>, Json(x): Json<$Ty>) -> Response {
             let x = match $validate(x) { Ok(x) => x, Err(m) => return error(StatusCode::BAD_REQUEST, &m) };
-            match st.service.store.$insert(&x).and_then(|id| st.service.store.$get_record(id)) {
+            match st.service.store.$insert(me.id, &x).and_then(|id| st.service.store.$get_record(me.id, id)) {
                 Ok(x) => (StatusCode::CREATED, Json(x)).into_response(),
                 Err(e) => catalog_error(e),
             }
         }
-        pub(super) async fn $view(State(st): State<Arc<AppState>>, Path(id): Path<i64>) -> Response {
-            match st.service.store.$get_record(id) { Ok(x) => Json(x).into_response(), Err(e) => catalog_error(e) }
+        pub(super) async fn $view(State(st): State<Arc<AppState>>, Extension(me): Extension<User>, Path(id): Path<i64>) -> Response {
+            match st.service.store.$get_record(me.id, id) { Ok(x) => Json(x).into_response(), Err(e) => catalog_error(e) }
         }
-        pub(super) async fn $edit(State(st): State<Arc<AppState>>, Path(id): Path<i64>, Json(x): Json<$Ty>) -> Response {
+        pub(super) async fn $edit(State(st): State<Arc<AppState>>, Extension(me): Extension<User>, Path(id): Path<i64>, Json(x): Json<$Ty>) -> Response {
             let x = match $validate(x) { Ok(x) => x, Err(m) => return error(StatusCode::BAD_REQUEST, &m) };
-            match st.service.store.$update(id, &x).and_then(|_| st.service.store.$get_record(id)) {
+            match st.service.store.$update(me.id, id, &x).and_then(|_| st.service.store.$get_record(me.id, id)) {
                 Ok(x) => Json(x).into_response(),
                 Err(e) => catalog_error(e),
             }
         }
-        pub(super) async fn $remove(State(st): State<Arc<AppState>>, Path(id): Path<i64>) -> Response {
-            match st.service.store.$delete(id) { Ok(()) => StatusCode::NO_CONTENT.into_response(), Err(e) => catalog_error(e) }
+        pub(super) async fn $remove(State(st): State<Arc<AppState>>, Extension(me): Extension<User>, Path(id): Path<i64>) -> Response {
+            match st.service.store.$delete(me.id, id) { Ok(()) => StatusCode::NO_CONTENT.into_response(), Err(e) => catalog_error(e) }
         }
     };
 }

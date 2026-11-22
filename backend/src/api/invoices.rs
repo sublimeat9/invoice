@@ -4,6 +4,7 @@ use super::{
     errors::{error, service_error},
     AppState,
 };
+use crate::accounts::User;
 use crate::{
     invoice::{Buyer, Line, Vat},
     service::InvoiceRequest,
@@ -13,7 +14,7 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -126,7 +127,11 @@ pub(super) fn document_number(access_key: &str) -> String {
     }
 }
 
-pub(super) async fn issue(State(st): State<Arc<AppState>>, Json(f): Json<InvoiceDto>) -> Response {
+pub(super) async fn issue(
+    State(st): State<Arc<AppState>>,
+    Extension(me): Extension<User>,
+    Json(f): Json<InvoiceDto>,
+) -> Response {
     let lines = f
         .lines
         .into_iter()
@@ -157,7 +162,7 @@ pub(super) async fn issue(State(st): State<Arc<AppState>>, Json(f): Json<Invoice
         payment_method: f.payment_method.unwrap_or_else(|| "01".into()),
         additional_info: f.additional_info,
     };
-    match st.service.issue(request).await {
+    match st.service.issue(me.id, request).await {
         Ok(r) => {
             let status = if r.status == "PENDIENTE" {
                 StatusCode::ACCEPTED
@@ -172,17 +177,21 @@ pub(super) async fn issue(State(st): State<Arc<AppState>>, Json(f): Json<Invoice
 
 pub(super) async fn get_invoice(
     State(st): State<Arc<AppState>>,
+    Extension(me): Extension<User>,
     Path(access_key): Path<String>,
 ) -> Response {
-    match st.service.store.get_record(&access_key) {
+    match st.service.store.get_record(me.id, &access_key) {
         Ok(Some(r)) => Json(RecordDto::full(r)).into_response(),
         Ok(None) => error(StatusCode::NOT_FOUND, "comprobante no encontrado"),
         Err(e) => service_error(e.into()),
     }
 }
 
-pub(super) async fn retry(State(st): State<Arc<AppState>>) -> Response {
-    match st.service.retry_pending().await {
+pub(super) async fn retry(
+    State(st): State<Arc<AppState>>,
+    Extension(me): Extension<User>,
+) -> Response {
+    match st.service.retry_pending(Some(me.id)).await {
         Ok(v) => {
             let out: Vec<_> = v
                 .into_iter()

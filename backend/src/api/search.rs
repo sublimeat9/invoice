@@ -5,12 +5,13 @@ use super::{
     invoices::{document_number, RecordDto},
     AppState,
 };
+use crate::accounts::User;
 use crate::store::Filter;
 use axum::{
     extract::{Query, State},
     http::{header, StatusCode},
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use serde::Deserialize;
 use std::sync::Arc;
@@ -68,13 +69,14 @@ pub(super) fn filter(q: SearchQuery) -> Result<Filter, String> {
 
 pub(super) async fn search(
     State(st): State<Arc<AppState>>,
+    Extension(me): Extension<User>,
     Query(q): Query<SearchQuery>,
 ) -> Response {
     let f = match filter(q) {
         Ok(f) => f,
         Err(m) => return error(StatusCode::BAD_REQUEST, &m),
     };
-    match st.service.store.search(&f) {
+    match st.service.store.search(me.id, &f) {
         Ok((v, total)) => Json(serde_json::json!({
             "total": total,
             "items": v.into_iter().map(RecordDto::summary).collect::<Vec<_>>(),
@@ -97,6 +99,7 @@ pub(super) fn cell(s: &str) -> String {
 
 pub(super) async fn report(
     State(st): State<Arc<AppState>>,
+    Extension(me): Extension<User>,
     Query(mut q): Query<SearchQuery>,
 ) -> Response {
     q.limit = Some(10_000);
@@ -105,7 +108,7 @@ pub(super) async fn report(
         Ok(f) => f,
         Err(m) => return error(StatusCode::BAD_REQUEST, &m),
     };
-    let items = match st.service.store.search(&f) {
+    let items = match st.service.store.search(me.id, &f) {
         Ok((v, _)) => v,
         Err(e) => return service_error(e.into()),
     };

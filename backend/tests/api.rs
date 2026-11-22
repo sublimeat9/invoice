@@ -9,6 +9,7 @@ use axum::{
 use http_body_util::BodyExt;
 use invoice_rust::{
     access_key::Environment,
+    accounts::Role,
     api::{router, AppState},
     invoice::Issuer,
     service::Service,
@@ -17,7 +18,7 @@ use invoice_rust::{
 use std::sync::Arc;
 use tower::ServiceExt;
 
-const TOKEN: &str = "token-de-prueba-0123456789";
+const ADMIN_PASSWORD: &str = "admin-password-123";
 
 const RECEIVED_XML: &str = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><ns2:validarComprobanteResponse xmlns:ns2="http://ec.gob.sri.ws.recepcion"><RespuestaRecepcionComprobante><estado>RECIBIDA</estado><comprobantes/></RespuestaRecepcionComprobante></ns2:validarComprobanteResponse></soap:Body></soap:Envelope>"#;
 const AUTHORIZED_XML: &str = r#"<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"><soap:Body><ns2:autorizacionComprobanteResponse xmlns:ns2="http://ec.gob.sri.ws.autorizacion"><RespuestaAutorizacionComprobante><claveAccesoConsultada>x</claveAccesoConsultada><numeroComprobantes>1</numeroComprobantes><autorizaciones><autorizacion><estado>AUTORIZADO</estado><numeroAutorizacion>NUM123</numeroAutorizacion><fechaAutorizacion>2026-11-22T10:00:00-05:00</fechaAutorizacion><ambiente>PRUEBAS</ambiente></autorizacion></autorizaciones></RespuestaAutorizacionComprobante></ns2:autorizacionComprobanteResponse></soap:Body></soap:Envelope>"#;
@@ -61,28 +62,51 @@ fn issuer() -> Issuer {
     }
 }
 
-/// Servicio ya configurado (emisor + certificado) apuntando a un SRI simulado.
-async fn app(sri_base: String) -> (Router, Arc<AppState>) {
-    let (r, st) = app_unconfigured(sri_base).await;
-    st.service
-        .store
-        .save_issuer(&issuer(), Environment::Testing)
-        .unwrap();
-    st.service
-        .store
-        .save_certificate(st.service.encryption_key(), P12, "test1234")
-        .unwrap();
-    (r, st)
+/// The test administrator's id (the data of every test belongs to it).
+fn owner_id(st: &AppState) -> i64 {
+    st.service.store.find_login("admin").unwrap().unwrap().0.id
 }
 
-async fn app_unconfigured(sri_base: String) -> (Router, Arc<AppState>) {
+/// Servicio ya configurado (emisor + certificado) apuntando a un SRI simulado.
+async fn app(sri_base: String) -> (Router, Arc<AppState>, String) {
+    let (r, st, token) = app_unconfigured(sri_base).await;
+    st.service
+        .store
+        .save_issuer(owner_id(&st), &issuer(), Environment::Testing)
+        .unwrap();
+    st.service
+        .store
+        .save_certificate(owner_id(&st), st.service.encryption_key(), P12, "test1234")
+        .unwrap();
+    (r, st, token)
+}
+
+/// App without issuer or certificate, plus the token of a signed-in administrator.
+async fn app_unconfigured(sri_base: String) -> (Router, Arc<AppState>, String) {
     let service = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba")
         .con_sri_base(sri_base);
-    let st = Arc::new(AppState {
-        service,
-        token: TOKEN.into(),
-    });
-    (router(st.clone()), st)
+    let st = Arc::new(AppState::new(service));
+    st.service
+        .store
+        .create_user("admin", ADMIN_PASSWORD, Role::Admin)
+        .unwrap();
+    let app = router(st.clone());
+    let token = login(&app, "admin", ADMIN_PASSWORD).await.1["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (app, st, token)
+}
+
+async fn login(app: &Router, user: &str, password: &str) -> (StatusCode, serde_json::Value) {
+    let body = serde_json::json!({ "username": user, "password": password }).to_string();
+    json(
+        app.clone()
+            .oneshot(req("POST", "/auth/login", None, Some(&body)))
+            .await
+            .unwrap(),
+    )
+    .await
 }
 
 fn req(method: &str, uri: &str, token: Option<&str>, body: Option<&str>) -> Request<Body> {
@@ -109,7 +133,7 @@ const INVOICE_JSON: &str = r#"{"lines":[{"main_code":"S/C","description":"ASISTE
 
 #[tokio::test]
 async fn health_requires_no_token() {
-    let (app, _) = app("http://127.0.0.1:1".into()).await;
+    let (app, _, _) = app("http://127.0.0.1:1".into()).await;
     let r = app
         .oneshot(req("GET", "/health", None, None))
         .await
@@ -119,7 +143,7 @@ async fn health_requires_no_token() {
 
 #[tokio::test]
 async fn missing_or_wrong_token_is_401() {
-    let (app, _) = app("http://127.0.0.1:1".into()).await;
+    let (app, _, _) = app("http://127.0.0.1:1".into()).await;
     for t in [None, Some("otro"), Some("")] {
         let r = app
             .clone()
@@ -132,10 +156,10 @@ async fn missing_or_wrong_token_is_401() {
 
 #[tokio::test]
 async fn issue_and_query() {
-    let (app, _) = app(mock_sri(false).await).await;
+    let (app, _, token) = app(mock_sri(false).await).await;
     let (s, v) = json(
         app.clone()
-            .oneshot(req("POST", "/invoices", Some(TOKEN), Some(INVOICE_JSON)))
+            .oneshot(req("POST", "/invoices", Some(&token), Some(INVOICE_JSON)))
             .await
             .unwrap(),
     )
@@ -152,7 +176,7 @@ async fn issue_and_query() {
             .oneshot(req(
                 "GET",
                 &format!("/invoices/{access_key}"),
-                Some(TOKEN),
+                Some(&token),
                 None,
             ))
             .await
@@ -164,7 +188,7 @@ async fn issue_and_query() {
 
     let (s, l) = json(
         app.clone()
-            .oneshot(req("GET", "/invoices", Some(TOKEN), None))
+            .oneshot(req("GET", "/invoices", Some(&token), None))
             .await
             .unwrap(),
     )
@@ -182,9 +206,10 @@ async fn issue_and_query() {
     let q = |uri: &str| {
         let app = app.clone();
         let uri = uri.to_string();
+        let token = token.clone();
         async move {
             json(
-                app.oneshot(req("GET", &uri, Some(TOKEN), None))
+                app.oneshot(req("GET", &uri, Some(&token), None))
                     .await
                     .unwrap(),
             )
@@ -203,7 +228,7 @@ async fn issue_and_query() {
     );
     let r = app
         .clone()
-        .oneshot(req("GET", "/invoices/report.csv", Some(TOKEN), None))
+        .oneshot(req("GET", "/invoices/report.csv", Some(&token), None))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::OK);
@@ -218,7 +243,7 @@ async fn issue_and_query() {
 
     // El secuencial avanza.
     let (_, v2) = json(
-        app.oneshot(req("POST", "/invoices", Some(TOKEN), Some(INVOICE_JSON)))
+        app.oneshot(req("POST", "/invoices", Some(&token), Some(INVOICE_JSON)))
             .await
             .unwrap(),
     )
@@ -228,25 +253,25 @@ async fn issue_and_query() {
 
 #[tokio::test]
 async fn invalid_data_is_400_and_does_not_spend_sequence() {
-    let (app, st) = app(mock_sri(false).await).await;
+    let (app, st, token) = app(mock_sri(false).await).await;
     let no_lines = r#"{"lines":[]}"#;
     let (s, v) = json(
         app.clone()
-            .oneshot(req("POST", "/invoices", Some(TOKEN), Some(no_lines)))
+            .oneshot(req("POST", "/invoices", Some(&token), Some(no_lines)))
             .await
             .unwrap(),
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
     let r = app
-        .oneshot(req("POST", "/invoices", Some(TOKEN), Some("no es json")))
+        .oneshot(req("POST", "/invoices", Some(&token), Some("no es json")))
         .await
         .unwrap();
     assert!(r.status().is_client_error());
     assert_eq!(
         st.service
             .store
-            .reserve_sequence(Environment::Testing, "001", "001")
+            .reserve_sequence(owner_id(&st), Environment::Testing, "001", "001")
             .unwrap(),
         1
     );
@@ -254,9 +279,9 @@ async fn invalid_data_is_400_and_does_not_spend_sequence() {
 
 #[tokio::test]
 async fn sri_down_leaves_pending_202() {
-    let (app, _) = app(mock_sri(true).await).await;
+    let (app, _, token) = app(mock_sri(true).await).await;
     let (s, v) = json(
-        app.oneshot(req("POST", "/invoices", Some(TOKEN), Some(INVOICE_JSON)))
+        app.oneshot(req("POST", "/invoices", Some(&token), Some(INVOICE_JSON)))
             .await
             .unwrap(),
     )
@@ -268,9 +293,9 @@ async fn sri_down_leaves_pending_202() {
 
 #[tokio::test]
 async fn missing_is_404() {
-    let (app, _) = app("http://127.0.0.1:1".into()).await;
+    let (app, _, token) = app("http://127.0.0.1:1".into()).await;
     let r = app
-        .oneshot(req("GET", "/invoices/0000", Some(TOKEN), None))
+        .oneshot(req("GET", "/invoices/0000", Some(&token), None))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
@@ -278,16 +303,16 @@ async fn missing_is_404() {
 
 // ---------- configuración ----------
 
-fn put(uri: &str, body: &str) -> Request<Body> {
-    req("PUT", uri, Some(TOKEN), Some(body))
+fn put(token: &str, uri: &str, body: &str) -> Request<Body> {
+    req("PUT", uri, Some(token), Some(body))
 }
 
 #[tokio::test]
 async fn unconfigured_cannot_issue() {
-    let (app, st) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    let (app, st, token) = app_unconfigured("http://127.0.0.1:1".into()).await;
     let (s, v) = json(
         app.clone()
-            .oneshot(req("POST", "/invoices", Some(TOKEN), Some(INVOICE_JSON)))
+            .oneshot(req("POST", "/invoices", Some(&token), Some(INVOICE_JSON)))
             .await
             .unwrap(),
     )
@@ -298,12 +323,12 @@ async fn unconfigured_cannot_issue() {
     assert_eq!(
         st.service
             .store
-            .reserve_sequence(Environment::Testing, "001", "001")
+            .reserve_sequence(owner_id(&st), Environment::Testing, "001", "001")
             .unwrap(),
         1
     );
     let (_, c) = json(
-        app.oneshot(req("GET", "/config", Some(TOKEN), None))
+        app.oneshot(req("GET", "/config", Some(&token), None))
             .await
             .unwrap(),
     )
@@ -317,11 +342,11 @@ async fn unconfigured_cannot_issue() {
 #[tokio::test]
 async fn configure_via_api_and_issue() {
     use base64::{engine::general_purpose::STANDARD, Engine};
-    let (app, _) = app_unconfigured(mock_sri(false).await).await;
+    let (app, _, token) = app_unconfigured(mock_sri(false).await).await;
     let issuer = r#"{"ruc":"1760013210001","business_name":"  MI EMPRESA ","head_office_address":"QUITO","establishment":"001","emission_point":"001","accounting_required":true,"trade_name":"","environment":"test"}"#;
     assert_eq!(
         app.clone()
-            .oneshot(put("/config/issuer", issuer))
+            .oneshot(put(&token, "/config/issuer", issuer))
             .await
             .unwrap()
             .status(),
@@ -335,7 +360,7 @@ async fn configure_via_api_and_issue() {
     );
     assert_eq!(
         app.clone()
-            .oneshot(put("/config/certificate", &wrong))
+            .oneshot(put(&token, "/config/certificate", &wrong))
             .await
             .unwrap()
             .status(),
@@ -343,7 +368,7 @@ async fn configure_via_api_and_issue() {
     );
     let (_, c) = json(
         app.clone()
-            .oneshot(req("GET", "/config", Some(TOKEN), None))
+            .oneshot(req("GET", "/config", Some(&token), None))
             .await
             .unwrap(),
     )
@@ -356,7 +381,7 @@ async fn configure_via_api_and_issue() {
     );
     let (s, info) = json(
         app.clone()
-            .oneshot(put("/config/certificate", &good))
+            .oneshot(put(&token, "/config/certificate", &good))
             .await
             .unwrap(),
     )
@@ -366,7 +391,7 @@ async fn configure_via_api_and_issue() {
 
     let (_, c) = json(
         app.clone()
-            .oneshot(req("GET", "/config", Some(TOKEN), None))
+            .oneshot(req("GET", "/config", Some(&token), None))
             .await
             .unwrap(),
     )
@@ -377,7 +402,7 @@ async fn configure_via_api_and_issue() {
     assert!(!c.to_string().contains("test1234")); // la contraseña nunca vuelve
 
     let (s, v) = json(
-        app.oneshot(req("POST", "/invoices", Some(TOKEN), Some(INVOICE_JSON)))
+        app.oneshot(req("POST", "/invoices", Some(&token), Some(INVOICE_JSON)))
             .await
             .unwrap(),
     )
@@ -387,7 +412,7 @@ async fn configure_via_api_and_issue() {
 
 #[tokio::test]
 async fn invalid_issuer_is_400() {
-    let (app, _) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    let (app, _, token) = app_unconfigured("http://127.0.0.1:1".into()).await;
     for body in [
         r#"{"ruc":"123","business_name":"X","head_office_address":"Y","establishment":"001","emission_point":"001","environment":"test"}"#,
         r#"{"ruc":"1760013210001","business_name":"  ","head_office_address":"Y","establishment":"001","emission_point":"001","environment":"test"}"#,
@@ -395,7 +420,7 @@ async fn invalid_issuer_is_400() {
     ] {
         assert_eq!(
             app.clone()
-                .oneshot(put("/config/issuer", body))
+                .oneshot(put(&token, "/config/issuer", body))
                 .await
                 .unwrap()
                 .status(),
@@ -409,11 +434,11 @@ async fn invalid_issuer_is_400() {
 
 #[tokio::test]
 async fn products_crud() {
-    let (app, _) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    let (app, _, token) = app_unconfigured("http://127.0.0.1:1".into()).await;
     let new_product = r#"{"main_code":" A1 ","name":"Camiseta","price_cents":1500,"vat":"15"}"#;
     let (s, p) = json(
         app.clone()
-            .oneshot(req("POST", "/products", Some(TOKEN), Some(new_product)))
+            .oneshot(req("POST", "/products", Some(&token), Some(new_product)))
             .await
             .unwrap(),
     )
@@ -424,7 +449,7 @@ async fn products_crud() {
 
     let (s, _) = json(
         app.clone()
-            .oneshot(req("POST", "/products", Some(TOKEN), Some(new_product)))
+            .oneshot(req("POST", "/products", Some(&token), Some(new_product)))
             .await
             .unwrap(),
     )
@@ -437,7 +462,7 @@ async fn products_crud() {
     ] {
         let (s, _) = json(
             app.clone()
-                .oneshot(req("POST", "/products", Some(TOKEN), Some(invalid_body)))
+                .oneshot(req("POST", "/products", Some(&token), Some(invalid_body)))
                 .await
                 .unwrap(),
         )
@@ -448,7 +473,7 @@ async fn products_crud() {
     let edit = r#"{"main_code":"A1","name":"Camiseta XL","price_cents":1800,"vat":"0"}"#;
     let (s, p) = json(
         app.clone()
-            .oneshot(put(&format!("/products/{id}"), edit))
+            .oneshot(put(&token, &format!("/products/{id}"), edit))
             .await
             .unwrap(),
     )
@@ -456,7 +481,7 @@ async fn products_crud() {
     assert_eq!((s, p["price_cents"].clone()), (StatusCode::OK, 1800.into()));
     let (_, l) = json(
         app.clone()
-            .oneshot(req("GET", "/products?q=xl", Some(TOKEN), None))
+            .oneshot(req("GET", "/products?q=xl", Some(&token), None))
             .await
             .unwrap(),
     )
@@ -464,12 +489,17 @@ async fn products_crud() {
     assert_eq!(l["total"], 1);
     let r = app
         .clone()
-        .oneshot(req("DELETE", &format!("/products/{id}"), Some(TOKEN), None))
+        .oneshot(req(
+            "DELETE",
+            &format!("/products/{id}"),
+            Some(&token),
+            None,
+        ))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::NO_CONTENT);
     let r = app
-        .oneshot(req("GET", &format!("/products/{id}"), Some(TOKEN), None))
+        .oneshot(req("GET", &format!("/products/{id}"), Some(&token), None))
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::NOT_FOUND);
@@ -477,12 +507,13 @@ async fn products_crud() {
 
 #[tokio::test]
 async fn customers_validate_id_number() {
-    let (app, _) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    let (app, _, token) = app_unconfigured("http://127.0.0.1:1".into()).await;
     let post = |b: &'static str| {
         let app = app.clone();
+        let token = token.clone();
         async move {
             json(
-                app.oneshot(req("POST", "/customers", Some(TOKEN), Some(b)))
+                app.oneshot(req("POST", "/customers", Some(&token), Some(b)))
                     .await
                     .unwrap(),
             )
@@ -523,8 +554,8 @@ async fn customers_validate_id_number() {
 #[tokio::test]
 async fn in_process_dispatch_without_network() {
     use invoice_rust::api::dispatch;
-    let (app, _) = app_unconfigured("http://127.0.0.1:1".into()).await;
-    let (s, b) = dispatch(app.clone(), TOKEN, "GET", "/config", None)
+    let (app, _, token) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    let (s, b) = dispatch(app.clone(), Some(&token), "GET", "/config", None)
         .await
         .unwrap();
     assert_eq!(s, 200);
@@ -532,7 +563,7 @@ async fn in_process_dispatch_without_network() {
     let new_product = r#"{"main_code":"Z9","name":"Zapato","price_cents":900,"vat":"15"}"#;
     let (s, _) = dispatch(
         app.clone(),
-        TOKEN,
+        Some(&token),
         "POST",
         "/products",
         Some(new_product.into()),
@@ -540,22 +571,432 @@ async fn in_process_dispatch_without_network() {
     .await
     .unwrap();
     assert_eq!(s, 201);
-    let (s, b) = dispatch(app.clone(), TOKEN, "GET", "/products?q=zap", None)
+    let (s, b) = dispatch(app.clone(), Some(&token), "GET", "/products?q=zap", None)
         .await
         .unwrap();
     assert!(s == 200 && b.contains("Zapato"));
     // Token incorrecto y rutas raras se rechazan.
     assert_eq!(
-        dispatch(app.clone(), "otro", "GET", "/config", None)
+        dispatch(app.clone(), Some("otro"), "GET", "/config", None)
             .await
             .unwrap()
             .0,
         401
     );
-    assert!(dispatch(app.clone(), TOKEN, "GET", "//evil.com/x", None)
+    assert!(
+        dispatch(app.clone(), Some(&token), "GET", "//evil.com/x", None)
+            .await
+            .is_err()
+    );
+    assert!(dispatch(app, Some(&token), "NO VALIDO", "/config", None)
         .await
         .is_err());
-    assert!(dispatch(app, TOKEN, "NO VALIDO", "/config", None)
+}
+
+#[tokio::test]
+async fn first_run_setup_then_login() {
+    let service = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba");
+    let app = router(Arc::new(AppState::new(service)));
+    let (_, v) = json(
+        app.clone()
+            .oneshot(req("GET", "/auth/status", None, None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(v["setup_required"], true);
+
+    // Weak passwords are refused; a good one creates the admin and signs in.
+    let weak = r#"{"username":"boss","password":"short"}"#;
+    let r = app
+        .clone()
+        .oneshot(req("POST", "/auth/setup", None, Some(weak)))
         .await
-        .is_err());
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    let good = r#"{"username":"boss","password":"long-enough-password"}"#;
+    let (s, v) = json(
+        app.clone()
+            .oneshot(req("POST", "/auth/setup", None, Some(good)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["user"]["role"], "admin");
+    let token = v["token"].as_str().unwrap().to_string();
+
+    // Setup is closed once a user exists.
+    let r = app
+        .clone()
+        .oneshot(req("POST", "/auth/setup", None, Some(good)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let (_, v) = json(
+        app.clone()
+            .oneshot(req("GET", "/auth/status", None, None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(v["setup_required"], false);
+
+    let (_, me) = json(
+        app.clone()
+            .oneshot(req("GET", "/auth/me", Some(&token), None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(me["username"], "boss");
+}
+
+#[tokio::test]
+async fn login_logout_and_bad_credentials() {
+    let (app, _, token) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    assert_eq!(
+        login(&app, "admin", "wrong-password").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        login(&app, "nobody", ADMIN_PASSWORD).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    // Usernames are not case sensitive.
+    assert_eq!(login(&app, "ADMIN", ADMIN_PASSWORD).await.0, StatusCode::OK);
+
+    let r = app
+        .clone()
+        .oneshot(req("POST", "/auth/logout", Some(&token), None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let r = app
+        .clone()
+        .oneshot(req("GET", "/auth/me", Some(&token), None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn too_many_failed_logins_are_throttled() {
+    let (app, _, _) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    for _ in 0..5 {
+        assert_eq!(
+            login(&app, "admin", "bad-password").await.0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    // Even the right password is refused while the lockout lasts.
+    assert_eq!(
+        login(&app, "admin", ADMIN_PASSWORD).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+}
+
+#[tokio::test]
+async fn regular_accounts_cannot_manage_users() {
+    let (app, st, admin) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    let body = r#"{"username":"ana","password":"ana-password-1","role":"operator"}"#;
+    let (s, v) = json(
+        app.clone()
+            .oneshot(req("POST", "/users", Some(&admin), Some(body)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let ana_id = v["id"].as_i64().unwrap();
+    let ana = login(&app, "ana", "ana-password-1").await.1["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Allowed: read config, use catalogs.
+    for (m, u, b) in [("GET", "/config", None), ("GET", "/products", None)] {
+        let r = app.clone().oneshot(req(m, u, Some(&ana), b)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK, "{u}");
+    }
+    // Forbidden: managing users.
+    for (m, u) in [("GET", "/users"), ("POST", "/users")] {
+        let r = app
+            .clone()
+            .oneshot(req(m, u, Some(&ana), Some("{}")))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), StatusCode::FORBIDDEN, "{m} {u}");
+    }
+    // Without a token everything is 401.
+    let r = app
+        .clone()
+        .oneshot(req("GET", "/users", None, None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+
+    // Deactivating Ana closes her session.
+    let r = app
+        .clone()
+        .oneshot(req(
+            "PUT",
+            &format!("/users/{ana_id}"),
+            Some(&admin),
+            Some(r#"{"active":false}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = app
+        .clone()
+        .oneshot(req("GET", "/config", Some(&ana), None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        login(&app, "ana", "ana-password-1").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+
+    // The only administrator cannot be removed.
+    let admin_id = st.service.store.find_login("admin").unwrap().unwrap().0.id;
+    let r = app
+        .clone()
+        .oneshot(req(
+            "PUT",
+            &format!("/users/{admin_id}"),
+            Some(&admin),
+            Some(r#"{"role":"operator"}"#),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn users_can_change_their_own_password() {
+    let (app, _, token) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    let other = login(&app, "admin", ADMIN_PASSWORD).await.1["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let wrong = r#"{"current_password":"nope","new_password":"brand-new-password"}"#;
+    let r = app
+        .clone()
+        .oneshot(req("PUT", "/auth/password", Some(&token), Some(wrong)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    let ok =
+        format!(r#"{{"current_password":"{ADMIN_PASSWORD}","new_password":"brand-new-password"}}"#);
+    let r = app
+        .clone()
+        .oneshot(req("PUT", "/auth/password", Some(&token), Some(&ok)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    // The current session stays; the other one is closed.
+    let r = app
+        .clone()
+        .oneshot(req("GET", "/auth/me", Some(&token), None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = app
+        .clone()
+        .oneshot(req("GET", "/auth/me", Some(&other), None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        login(&app, "admin", "brand-new-password").await.0,
+        StatusCode::OK
+    );
+}
+
+#[tokio::test]
+async fn public_registration_creates_active_operators() {
+    let service = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba");
+    let app = router(Arc::new(AppState::new(service)));
+    let body = r#"{"username":"ana","password":"ana-password-1"}"#;
+    // Before the administrator exists, sign-up is refused.
+    let r = app
+        .clone()
+        .oneshot(req("POST", "/auth/register", None, Some(body)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let admin = r#"{"username":"boss","password":"long-enough-password"}"#;
+    app.clone()
+        .oneshot(req("POST", "/auth/setup", None, Some(admin)))
+        .await
+        .unwrap();
+
+    let (s, v) = json(
+        app.clone()
+            .oneshot(req("POST", "/auth/register", None, Some(body)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["user"]["role"], "operator");
+    let token = v["token"].as_str().unwrap();
+    let r = app
+        .clone()
+        .oneshot(req("GET", "/products", Some(token), None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = app
+        .clone()
+        .oneshot(req("GET", "/users", Some(token), None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    // Taken usernames and weak passwords are rejected.
+    let r = app
+        .clone()
+        .oneshot(req("POST", "/auth/register", None, Some(body)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CONFLICT);
+    let weak = r#"{"username":"bob","password":"short"}"#;
+    let r = app
+        .clone()
+        .oneshot(req("POST", "/auth/register", None, Some(weak)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn each_account_only_sees_its_own_business() {
+    let (app, st, boss) = app(mock_sri(false).await).await;
+    // A second business signs up.
+    let body = r#"{"username":"ana","password":"ana-password-1"}"#;
+    let ana = json(
+        app.clone()
+            .oneshot(req("POST", "/auth/register", None, Some(body)))
+            .await
+            .unwrap(),
+    )
+    .await
+    .1["token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // The first business is configured and issues an invoice; the second starts empty.
+    let (_, cfg) = json(
+        app.clone()
+            .oneshot(req("GET", "/config", Some(&ana), None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(cfg["ready"], false);
+    assert!(cfg["issuer"].is_null());
+    let (_, cfg) = json(
+        app.clone()
+            .oneshot(req("GET", "/config", Some(&boss), None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(cfg["ready"], true);
+
+    let invoice = r#"{"lines":[{"main_code":"A","description":"x","quantity":1,"unit_price_cents":1000,"vat":"15"}]}"#;
+    let (s, v) = json(
+        app.clone()
+            .oneshot(req("POST", "/invoices", Some(&boss), Some(invoice)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let key = v["access_key"].as_str().unwrap().to_string();
+
+    // Ana cannot issue (no issuer/certificate yet), list, read or retry Boss's documents.
+    let r = app
+        .clone()
+        .oneshot(req("POST", "/invoices", Some(&ana), Some(invoice)))
+        .await
+        .unwrap();
+    assert!(r.status().is_client_error());
+    let (_, list) = json(
+        app.clone()
+            .oneshot(req("GET", "/invoices", Some(&ana), None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(list["total"], 0);
+    let r = app
+        .clone()
+        .oneshot(req("GET", &format!("/invoices/{key}"), Some(&ana), None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    let (_, list) = json(
+        app.clone()
+            .oneshot(req("GET", "/invoices", Some(&boss), None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(list["total"], 1);
+
+    // Catalogs are separate too, and the same product code can exist in both.
+    let product = r#"{"main_code":"P1","name":"Thing","price_cents":500,"vat":"15"}"#;
+    let (s, p) = json(
+        app.clone()
+            .oneshot(req("POST", "/products", Some(&boss), Some(product)))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let id = p["id"].as_i64().unwrap();
+    let (_, list) = json(
+        app.clone()
+            .oneshot(req("GET", "/products", Some(&ana), None))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(list["total"], 0);
+    let r = app
+        .clone()
+        .oneshot(req(
+            "PUT",
+            &format!("/products/{id}"),
+            Some(&ana),
+            Some(product),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    let r = app
+        .clone()
+        .oneshot(req("DELETE", &format!("/products/{id}"), Some(&ana), None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    let r = app
+        .clone()
+        .oneshot(req("POST", "/products", Some(&ana), Some(product)))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::CREATED);
+
+    // Sequences are per business.
+    let ana_id = st.service.store.find_login("ana").unwrap().unwrap().0.id;
+    let s = &st.service.store;
+    assert_eq!(
+        s.reserve_sequence(ana_id, Environment::Testing, "001", "001")
+            .unwrap(),
+        1
+    );
 }

@@ -1,15 +1,17 @@
 //! API HTTP (JSON) sobre `Service`. Un módulo por recurso:
 //!
-//! | módulo       | rutas                                                                  |
-//! |--------------|------------------------------------------------------------------------|
-//! | `invoices`   | `POST /invoices`, `GET /invoices/{access_key}`, `POST /invoices/retry` |
-//! | `search`   | `GET /invoices` (filtros) y `GET /invoices/report.csv`                |
-//! | `config`     | `GET /config`, `PUT /config/issuer`, `PUT /config/certificate`         |
-//! | `catalogs`  | `/products` y `/customers` (CRUD)                                      |
-//! | `auth`       | exige `Authorization: Bearer <API_TOKEN>` (salvo `GET /health`)        |
-//! | `dispatch`   | `dispatch`: invoca el router dentro del proceso (app de escritorio)   |
+//! | módulo     | rutas                                                                    |
+//! |------------|--------------------------------------------------------------------------|
+//! | `auth`     | `/auth/status`, `/auth/setup`, `/auth/register`, `/auth/login`, `/auth/logout`, `/auth/me`, `/auth/password` |
+//! | `users`    | `/users` (solo administradores)                                          |
+//! | `invoices` | `POST /invoices`, `GET /invoices/{access_key}`, `POST /invoices/retry`   |
+//! | `search`   | `GET /invoices` (filtros) y `GET /invoices/report.csv`                   |
+//! | `config`   | `GET /config` (todos); `PUT /config/issuer` y `/config/certificate` (admin) |
+//! | `catalogs` | `/products` y `/customers` (CRUD)                                        |
+//! | `dispatch` | `dispatch`: invoca el router dentro del proceso (app de escritorio)      |
 //!
-//! Los montos viajan en centavos enteros.
+//! Todo exige `Authorization: Bearer <token de sesión>` salvo `/health` y las rutas de
+//! `/auth` para entrar. Los montos viajan en centavos enteros.
 
 mod auth;
 mod catalogs;
@@ -18,6 +20,7 @@ mod dispatch;
 mod errors;
 mod invoices;
 mod search;
+mod users;
 
 use crate::service::Service;
 use axum::{
@@ -31,11 +34,26 @@ pub use dispatch::dispatch;
 
 pub struct AppState {
     pub service: Service,
-    pub token: String,
+    login_throttle: auth::LoginThrottle,
+}
+
+impl AppState {
+    pub fn new(service: Service) -> Self {
+        Self {
+            service,
+            login_throttle: Default::default(),
+        }
+    }
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
-    let protected_routes = Router::new()
+    let login_required = || middleware::from_fn_with_state(state.clone(), auth::authenticate);
+
+    // Any signed-in user.
+    let signed_in = Router::new()
+        .route("/auth/me", get(auth::me))
+        .route("/auth/logout", post(auth::logout))
+        .route("/auth/password", put(auth::change_password))
         .route("/invoices", post(invoices::issue).get(search::search))
         .route("/invoices/report.csv", get(search::report))
         .route("/invoices/retry", post(invoices::retry))
@@ -63,12 +81,22 @@ pub fn router(state: Arc<AppState>) -> Router {
                 .put(catalogs::edit_customer)
                 .delete(catalogs::remove_customer),
         )
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_token,
-        ))
-        .with_state(state);
+        .layer(login_required());
+
+    // Administrators only: managing users. The issuer and certificate belong to each account.
+    let admin_only = Router::new()
+        .route("/users", get(users::list_users).post(users::create_user))
+        .route("/users/{id}", put(users::update_user))
+        .layer(middleware::from_fn(auth::require_admin))
+        .layer(login_required());
+
     Router::new()
         .route("/health", get(|| async { "ok" }))
-        .merge(protected_routes)
+        .route("/auth/status", get(auth::status))
+        .route("/auth/setup", post(auth::setup))
+        .route("/auth/register", post(auth::register))
+        .route("/auth/login", post(auth::login))
+        .merge(signed_in)
+        .merge(admin_only)
+        .with_state(state)
 }

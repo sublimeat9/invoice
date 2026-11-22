@@ -71,24 +71,24 @@ impl Store {
         })
     }
 
-    pub fn create_product(&self, p: &Product) -> Result<i64, CatalogError> {
+    pub fn create_product(&self, owner: i64, p: &Product) -> Result<i64, CatalogError> {
         let c = self.conn.lock().unwrap();
         c.execute(
-            "INSERT INTO products (main_code, aux_code, name, price, vat) VALUES (?1,?2,?3,?4,?5)",
-            params![p.main_code, p.aux_code, p.name, p.price_cents, p.vat],
+            "INSERT INTO products (owner_id, main_code, aux_code, name, price, vat) VALUES (?1,?2,?3,?4,?5,?6)",
+            params![owner, p.main_code, p.aux_code, p.name, p.price_cents, p.vat],
         )
         .map_err(map_error)?;
         Ok(c.last_insert_rowid())
     }
 
-    pub fn update_product(&self, id: i64, p: &Product) -> Result<(), CatalogError> {
+    pub fn update_product(&self, owner: i64, id: i64, p: &Product) -> Result<(), CatalogError> {
         let n = self
             .conn
             .lock()
             .unwrap()
             .execute(
-                "UPDATE products SET main_code=?2, aux_code=?3, name=?4, price=?5, vat=?6 WHERE id=?1",
-                params![id, p.main_code, p.aux_code, p.name, p.price_cents, p.vat],
+                "UPDATE products SET main_code=?2, aux_code=?3, name=?4, price=?5, vat=?6 WHERE id=?1 AND owner_id=?7",
+                params![id, p.main_code, p.aux_code, p.name, p.price_cents, p.vat, owner],
             )
             .map_err(map_error)?;
         if n == 0 {
@@ -98,12 +98,15 @@ impl Store {
         }
     }
 
-    pub fn delete_product(&self, id: i64) -> Result<(), CatalogError> {
+    pub fn delete_product(&self, owner: i64, id: i64) -> Result<(), CatalogError> {
         let n = self
             .conn
             .lock()
             .unwrap()
-            .execute("DELETE FROM products WHERE id=?1", params![id])
+            .execute(
+                "DELETE FROM products WHERE id=?1 AND owner_id=?2",
+                params![id, owner],
+            )
             .map_err(map_error)?;
         if n == 0 {
             Err(CatalogError::NotFound)
@@ -112,13 +115,13 @@ impl Store {
         }
     }
 
-    pub fn get_product(&self, id: i64) -> Result<Product, CatalogError> {
+    pub fn get_product(&self, owner: i64, id: i64) -> Result<Product, CatalogError> {
         self.conn
             .lock()
             .unwrap()
             .query_row(
-                "SELECT id, main_code, aux_code, name, price, vat FROM products WHERE id=?1",
-                params![id],
+                "SELECT id, main_code, aux_code, name, price, vat FROM products WHERE id=?1 AND owner_id=?2",
+                params![id, owner],
                 Self::product,
             )
             .map_err(|e| match e {
@@ -130,6 +133,7 @@ impl Store {
     /// Busca por código o nombre (subcadena). Devuelve la página y el total.
     pub fn search_products(
         &self,
+        owner: i64,
         q: Option<&str>,
         limit: u32,
         page: u32,
@@ -137,15 +141,17 @@ impl Store {
         let c = self.conn.lock().unwrap();
         let q = q.map(str::trim).filter(|q| !q.is_empty()).map(pattern);
         let where_clause = if q.is_some() {
-            " WHERE main_code LIKE ?1 ESCAPE '\\' OR aux_code LIKE ?1 ESCAPE '\\' OR name LIKE ?1 ESCAPE '\\'"
+            " WHERE owner_id = ?1 AND (main_code LIKE ?2 ESCAPE '\\' OR aux_code LIKE ?2 ESCAPE '\\' OR name LIKE ?2 ESCAPE '\\')"
         } else {
-            ""
+            " WHERE owner_id = ?1"
         };
-        let a: Vec<String> = q.into_iter().collect();
+        let a: Vec<rusqlite::types::Value> = std::iter::once(owner.into())
+            .chain(q.into_iter().map(Into::into))
+            .collect();
         let total: u64 = c
             .query_row(
                 &format!("SELECT COUNT(*) FROM products{where_clause}"),
-                rusqlite::params_from_iter(&a),
+                rusqlite::params_from_iter(a.iter()),
                 |r| r.get(0),
             )
             .map_err(map_error)?;
@@ -158,7 +164,7 @@ impl Store {
             ))
             .map_err(map_error)?;
         let v = st
-            .query_map(rusqlite::params_from_iter(&a), Self::product)
+            .query_map(rusqlite::params_from_iter(a.iter()), Self::product)
             .map_err(map_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(map_error)?;
@@ -178,24 +184,24 @@ impl Store {
         })
     }
 
-    pub fn create_customer(&self, k: &Customer) -> Result<i64, CatalogError> {
+    pub fn create_customer(&self, owner: i64, k: &Customer) -> Result<i64, CatalogError> {
         let c = self.conn.lock().unwrap();
         c.execute(
-            "INSERT INTO customers (id_type, id_number, business_name, address, phone, email) VALUES (?1,?2,?3,?4,?5,?6)",
-            params![k.id_type, k.id_number, k.business_name, k.address, k.phone, k.email],
+            "INSERT INTO customers (owner_id, id_type, id_number, business_name, address, phone, email) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![owner, k.id_type, k.id_number, k.business_name, k.address, k.phone, k.email],
         )
         .map_err(map_error)?;
         Ok(c.last_insert_rowid())
     }
 
-    pub fn update_customer(&self, id: i64, k: &Customer) -> Result<(), CatalogError> {
+    pub fn update_customer(&self, owner: i64, id: i64, k: &Customer) -> Result<(), CatalogError> {
         let n = self
             .conn
             .lock()
             .unwrap()
             .execute(
-                "UPDATE customers SET id_type=?2, id_number=?3, business_name=?4, address=?5, phone=?6, email=?7 WHERE id=?1",
-                params![id, k.id_type, k.id_number, k.business_name, k.address, k.phone, k.email],
+                "UPDATE customers SET id_type=?2, id_number=?3, business_name=?4, address=?5, phone=?6, email=?7 WHERE id=?1 AND owner_id=?8",
+                params![id, k.id_type, k.id_number, k.business_name, k.address, k.phone, k.email, owner],
             )
             .map_err(map_error)?;
         if n == 0 {
@@ -205,12 +211,15 @@ impl Store {
         }
     }
 
-    pub fn delete_customer(&self, id: i64) -> Result<(), CatalogError> {
+    pub fn delete_customer(&self, owner: i64, id: i64) -> Result<(), CatalogError> {
         let n = self
             .conn
             .lock()
             .unwrap()
-            .execute("DELETE FROM customers WHERE id=?1", params![id])
+            .execute(
+                "DELETE FROM customers WHERE id=?1 AND owner_id=?2",
+                params![id, owner],
+            )
             .map_err(map_error)?;
         if n == 0 {
             Err(CatalogError::NotFound)
@@ -219,11 +228,11 @@ impl Store {
         }
     }
 
-    pub fn get_customer(&self, id: i64) -> Result<Customer, CatalogError> {
+    pub fn get_customer(&self, owner: i64, id: i64) -> Result<Customer, CatalogError> {
         self.conn
             .lock()
             .unwrap()
-            .query_row("SELECT id, id_type, id_number, business_name, address, phone, email FROM customers WHERE id=?1", params![id], Self::customer)
+            .query_row("SELECT id, id_type, id_number, business_name, address, phone, email FROM customers WHERE id=?1 AND owner_id=?2", params![id, owner], Self::customer)
             .map_err(|e| match e {
                 rusqlite::Error::QueryReturnedNoRows => CatalogError::NotFound,
                 e => map_error(e),
@@ -232,6 +241,7 @@ impl Store {
 
     pub fn search_customers(
         &self,
+        owner: i64,
         q: Option<&str>,
         limit: u32,
         page: u32,
@@ -239,15 +249,17 @@ impl Store {
         let c = self.conn.lock().unwrap();
         let q = q.map(str::trim).filter(|q| !q.is_empty()).map(pattern);
         let where_clause = if q.is_some() {
-            " WHERE id_number LIKE ?1 ESCAPE '\\' OR business_name LIKE ?1 ESCAPE '\\'"
+            " WHERE owner_id = ?1 AND (id_number LIKE ?2 ESCAPE '\\' OR business_name LIKE ?2 ESCAPE '\\')"
         } else {
-            ""
+            " WHERE owner_id = ?1"
         };
-        let a: Vec<String> = q.into_iter().collect();
+        let a: Vec<rusqlite::types::Value> = std::iter::once(owner.into())
+            .chain(q.into_iter().map(Into::into))
+            .collect();
         let total: u64 = c
             .query_row(
                 &format!("SELECT COUNT(*) FROM customers{where_clause}"),
-                rusqlite::params_from_iter(&a),
+                rusqlite::params_from_iter(a.iter()),
                 |r| r.get(0),
             )
             .map_err(map_error)?;
@@ -260,7 +272,7 @@ impl Store {
             ))
             .map_err(map_error)?;
         let v = st
-            .query_map(rusqlite::params_from_iter(&a), Self::customer)
+            .query_map(rusqlite::params_from_iter(a.iter()), Self::customer)
             .map_err(map_error)?
             .collect::<Result<Vec<_>, _>>()
             .map_err(map_error)?;
@@ -286,33 +298,36 @@ mod tests {
     #[test]
     fn products_crud() {
         let s = Store::in_memory().unwrap();
-        let id = s.create_product(&product("A1", "Camiseta")).unwrap();
+        let id = s.create_product(1, &product("A1", "Camiseta")).unwrap();
         assert!(matches!(
-            s.create_product(&product("A1", "Otra")),
+            s.create_product(1, &product("A1", "Otra")),
             Err(CatalogError::Duplicate)
         ));
-        s.create_product(&product("B2", "Pantalón")).unwrap();
-        assert_eq!(s.search_products(None, 50, 1).unwrap().1, 2);
+        s.create_product(1, &product("B2", "Pantalón")).unwrap();
+        assert_eq!(s.search_products(1, None, 50, 1).unwrap().1, 2);
         assert_eq!(
-            s.search_products(Some("camis"), 50, 1).unwrap().0[0].main_code,
+            s.search_products(1, Some("camis"), 50, 1).unwrap().0[0].main_code,
             "A1"
         );
-        assert_eq!(s.search_products(Some("B2"), 50, 1).unwrap().1, 1);
-        assert_eq!(s.search_products(Some("%"), 50, 1).unwrap().1, 0); // literal
-        let mut p = s.get_product(id).unwrap();
+        assert_eq!(s.search_products(1, Some("B2"), 50, 1).unwrap().1, 1);
+        assert_eq!(s.search_products(1, Some("%"), 50, 1).unwrap().1, 0); // literal
+        let mut p = s.get_product(1, id).unwrap();
         p.price_cents = 2000;
-        s.update_product(id, &p).unwrap();
-        assert_eq!(s.get_product(id).unwrap().price_cents, 2000);
+        s.update_product(1, id, &p).unwrap();
+        assert_eq!(s.get_product(1, id).unwrap().price_cents, 2000);
         // No se puede renombrar a un código existente.
         p.main_code = "B2".into();
         assert!(matches!(
-            s.update_product(id, &p),
+            s.update_product(1, id, &p),
             Err(CatalogError::Duplicate)
         ));
-        s.delete_product(id).unwrap();
-        assert!(matches!(s.delete_product(id), Err(CatalogError::NotFound)));
-        assert!(matches!(s.get_product(id), Err(CatalogError::NotFound)));
-        let (page, total) = s.search_products(None, 1, 2).unwrap();
+        s.delete_product(1, id).unwrap();
+        assert!(matches!(
+            s.delete_product(1, id),
+            Err(CatalogError::NotFound)
+        ));
+        assert!(matches!(s.get_product(1, id), Err(CatalogError::NotFound)));
+        let (page, total) = s.search_products(1, None, 1, 2).unwrap();
         assert_eq!((page.len(), total), (0, 1));
     }
 
@@ -328,19 +343,19 @@ mod tests {
             phone: None,
             email: Some("j@x.com".into()),
         };
-        let id = s.create_customer(&k).unwrap();
+        let id = s.create_customer(1, &k).unwrap();
         assert!(matches!(
-            s.create_customer(&k),
+            s.create_customer(1, &k),
             Err(CatalogError::Duplicate)
         ));
-        assert_eq!(s.search_customers(Some("1712"), 50, 1).unwrap().1, 1);
-        assert_eq!(s.search_customers(Some("perez"), 50, 1).unwrap().1, 0); // sin tilde no coincide (SQLite)
-        assert_eq!(s.search_customers(Some("Pérez"), 50, 1).unwrap().1, 1);
-        let mut k2 = s.get_customer(id).unwrap();
+        assert_eq!(s.search_customers(1, Some("1712"), 50, 1).unwrap().1, 1);
+        assert_eq!(s.search_customers(1, Some("perez"), 50, 1).unwrap().1, 0); // sin tilde no coincide (SQLite)
+        assert_eq!(s.search_customers(1, Some("Pérez"), 50, 1).unwrap().1, 1);
+        let mut k2 = s.get_customer(1, id).unwrap();
         k2.phone = Some("099".into());
-        s.update_customer(id, &k2).unwrap();
-        assert_eq!(s.get_customer(id).unwrap().phone.as_deref(), Some("099"));
-        s.delete_customer(id).unwrap();
-        assert!(matches!(s.get_customer(id), Err(CatalogError::NotFound)));
+        s.update_customer(1, id, &k2).unwrap();
+        assert_eq!(s.get_customer(1, id).unwrap().phone.as_deref(), Some("099"));
+        s.delete_customer(1, id).unwrap();
+        assert!(matches!(s.get_customer(1, id), Err(CatalogError::NotFound)));
     }
 }

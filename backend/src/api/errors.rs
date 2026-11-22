@@ -1,6 +1,6 @@
 //! Respuestas de error JSON y su traducción desde los errores del dominio.
 
-use crate::service::ServiceError;
+use crate::{accounts::AccountError, service::ServiceError};
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -18,6 +18,20 @@ pub(super) fn service_error(e: ServiceError) -> Response {
         ServiceError::Sri(_) => error(StatusCode::BAD_GATEWAY, &e.to_string()),
         // No se filtran detalles internos (rutas, SQL) al cliente.
         ServiceError::Store(_) | ServiceError::Signing(_) => {
+            eprintln!("error interno: {e}");
+            error(StatusCode::INTERNAL_SERVER_ERROR, "error interno")
+        }
+    }
+}
+
+pub(super) fn account_error(e: AccountError) -> Response {
+    match &e {
+        AccountError::Invalid(_) => error(StatusCode::BAD_REQUEST, &e.to_string()),
+        AccountError::Duplicate | AccountError::LastAdmin => {
+            error(StatusCode::CONFLICT, &e.to_string())
+        }
+        AccountError::NotFound => error(StatusCode::NOT_FOUND, &e.to_string()),
+        AccountError::Store(_) => {
             eprintln!("error interno: {e}");
             error(StatusCode::INTERNAL_SERVER_ERROR, "error interno")
         }

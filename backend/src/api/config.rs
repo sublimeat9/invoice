@@ -4,6 +4,7 @@ use super::{
     errors::{error, service_error},
     AppState,
 };
+use crate::accounts::User;
 use crate::{
     access_key::Environment, invoice::Issuer, settings::parse_environment, signing::CertSigner,
 };
@@ -11,18 +12,21 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
+    Extension, Json,
 };
 use serde::Deserialize;
 use std::sync::Arc;
 
-pub(super) async fn view_config(State(st): State<Arc<AppState>>) -> Response {
+pub(super) async fn view_config(
+    State(st): State<Arc<AppState>>,
+    Extension(me): Extension<User>,
+) -> Response {
     let sv = &st.service;
-    let issuer = match sv.store.load_issuer() {
+    let issuer = match sv.store.load_issuer(me.id) {
         Ok(e) => e,
         Err(e) => return service_error(e.into()),
     };
-    let certificate = match sv.store.load_certificate(sv.encryption_key()) {
+    let certificate = match sv.store.load_certificate(me.id, sv.encryption_key()) {
         Ok(None) => serde_json::json!({ "loaded": false }),
         Ok(Some((p12, pass))) => match CertSigner::from_p12(&p12, &pass).and_then(|f| f.info()) {
             Ok(i) => {
@@ -40,7 +44,7 @@ pub(super) async fn view_config(State(st): State<Arc<AppState>>) -> Response {
         "issuer": issuer.map(|(e, _)| e),
         "environment": if environment == Environment::Production { "production" } else { "test" },
         "certificate": certificate,
-        "ready": sv.config().is_ok(),
+        "ready": sv.config(me.id).is_ok(),
     }))
     .into_response()
 }
@@ -54,6 +58,7 @@ pub struct IssuerConfigDto {
 
 pub(super) async fn save_issuer(
     State(st): State<Arc<AppState>>,
+    Extension(me): Extension<User>,
     Json(c): Json<IssuerConfigDto>,
 ) -> Response {
     let mut e = c.issuer;
@@ -86,7 +91,7 @@ pub(super) async fn save_issuer(
             "ambiente debe ser pruebas o produccion",
         );
     };
-    match st.service.store.save_issuer(&e, env_label) {
+    match st.service.store.save_issuer(me.id, &e, env_label) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => service_error(e.into()),
     }
@@ -100,6 +105,7 @@ pub struct CertificateDto {
 
 pub(super) async fn save_certificate(
     State(st): State<Arc<AppState>>,
+    Extension(me): Extension<User>,
     Json(c): Json<CertificateDto>,
 ) -> Response {
     use base64::{engine::general_purpose::STANDARD, Engine};
@@ -126,7 +132,7 @@ pub(super) async fn save_certificate(
     match st
         .service
         .store
-        .save_certificate(st.service.encryption_key(), &p12, &c.password)
+        .save_certificate(me.id, st.service.encryption_key(), &p12, &c.password)
     {
         Ok(()) => Json(info).into_response(),
         Err(e) => service_error(e.into()),

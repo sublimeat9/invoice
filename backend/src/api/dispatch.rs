@@ -6,7 +6,7 @@ use axum::{extract::Request, http::header, Router};
 /// interfaz y el backend viven juntos. Devuelve `(código HTTP, body)`.
 pub async fn dispatch(
     app: Router,
-    token: &str,
+    token: Option<&str>,
     method: &str,
     path: &str,
     body: Option<String>,
@@ -17,10 +17,10 @@ pub async fn dispatch(
         return Err("ruta inválida".into());
     }
     let method: axum::http::Method = method.parse().map_err(|_| "método inválido".to_string())?;
-    let mut req = Request::builder()
-        .method(method)
-        .uri(path)
-        .header(header::AUTHORIZATION, format!("Bearer {token}"));
+    let mut req = Request::builder().method(method).uri(path);
+    if let Some(token) = token {
+        req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
     if body.is_some() {
         req = req.header(header::CONTENT_TYPE, "application/json");
     }

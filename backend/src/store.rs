@@ -62,35 +62,43 @@ pub struct Store {
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS sequences (
+    owner_id INTEGER NOT NULL DEFAULT 0,
     environment TEXT NOT NULL, establishment TEXT NOT NULL, emission_point TEXT NOT NULL,
     last_value INTEGER NOT NULL,
-    PRIMARY KEY (environment, establishment, emission_point)
+    PRIMARY KEY (owner_id, environment, establishment, emission_point)
 );
 CREATE TABLE IF NOT EXISTS config (
-    key TEXT PRIMARY KEY, value TEXT NOT NULL
+    owner_id INTEGER NOT NULL DEFAULT 0,
+    key TEXT NOT NULL, value TEXT NOT NULL,
+    PRIMARY KEY (owner_id, key)
 );
 CREATE TABLE IF NOT EXISTS certificate (
-    id INTEGER PRIMARY KEY CHECK (id = 1),
+    owner_id INTEGER PRIMARY KEY,
     p12_encrypted BLOB NOT NULL,
     password_encrypted BLOB NOT NULL
 );
 CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    main_code TEXT NOT NULL UNIQUE,
+    owner_id INTEGER NOT NULL DEFAULT 0,
+    main_code TEXT NOT NULL,
     aux_code TEXT,
     name TEXT NOT NULL,
     price INTEGER NOT NULL,
-    vat TEXT NOT NULL DEFAULT '15'
+    vat TEXT NOT NULL DEFAULT '15',
+    UNIQUE (owner_id, main_code)
 );
 CREATE TABLE IF NOT EXISTS customers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    owner_id INTEGER NOT NULL DEFAULT 0,
     id_type TEXT NOT NULL,
-    id_number TEXT NOT NULL UNIQUE,
+    id_number TEXT NOT NULL,
     business_name TEXT NOT NULL,
-    address TEXT, phone TEXT, email TEXT
+    address TEXT, phone TEXT, email TEXT,
+    UNIQUE (owner_id, id_number)
 );
 CREATE TABLE IF NOT EXISTS documents (
     access_key TEXT PRIMARY KEY,
+    owner_id INTEGER NOT NULL DEFAULT 0,
     sequence INTEGER NOT NULL,
     issue_date TEXT,
     document_type TEXT NOT NULL DEFAULT '01',
@@ -103,6 +111,19 @@ CREATE TABLE IF NOT EXISTS documents (
     authorization_date TEXT,
     messages TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL CHECK (role IN ('admin', 'operator')),
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    expires_at INTEGER NOT NULL
 );";
 
 fn env_label(a: Environment) -> &'static str {
@@ -123,6 +144,7 @@ impl Store {
 
     fn from_connection(conn: Connection) -> Result<Self, StoreError> {
         migrate_legacy_spanish_schema(&conn)?;
+        migrate_to_owners(&conn)?;
         conn.execute_batch(SCHEMA)?;
         migrate(&conn)?;
         Ok(Self {
@@ -134,16 +156,17 @@ impl Store {
     /// reutiliza aunque la emisión falle después.
     pub fn reserve_sequence(
         &self,
+        owner: i64,
         a: Environment,
         establishment: &str,
         emission_point: &str,
     ) -> Result<u32, StoreError> {
         let c = self.conn.lock().unwrap();
         let n = c.query_row(
-            "INSERT INTO sequences (environment, establishment, emission_point, last_value) VALUES (?1, ?2, ?3, 1)
-             ON CONFLICT (environment, establishment, emission_point) DO UPDATE SET last_value = last_value + 1
+            "INSERT INTO sequences (owner_id, environment, establishment, emission_point, last_value) VALUES (?1, ?2, ?3, ?4, 1)
+             ON CONFLICT (owner_id, environment, establishment, emission_point) DO UPDATE SET last_value = last_value + 1
              RETURNING last_value",
-            params![env_label(a), establishment, emission_point],
+            params![owner, env_label(a), establishment, emission_point],
             |r| r.get(0),
         )?;
         Ok(n)
@@ -153,30 +176,32 @@ impl Store {
     /// baja: si ya hay uno mayor, se conserva, para no repetir números.
     pub fn set_sequence(
         &self,
+        owner: i64,
         a: Environment,
         establishment: &str,
         emission_point: &str,
         last: u32,
     ) -> Result<(), StoreError> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO sequences (environment, establishment, emission_point, last_value) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (environment, establishment, emission_point) DO UPDATE SET last_value = MAX(last_value, excluded.last_value)",
-            params![env_label(a), establishment, emission_point, last],
+            "INSERT INTO sequences (owner_id, environment, establishment, emission_point, last_value) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT (owner_id, environment, establishment, emission_point) DO UPDATE SET last_value = MAX(last_value, excluded.last_value)",
+            params![owner, env_label(a), establishment, emission_point, last],
         )?;
         Ok(())
     }
 
     pub fn save_pending(
         &self,
+        owner: i64,
         access_key: &str,
         sequence: u32,
         signed_xml: &str,
         m: &Meta,
     ) -> Result<(), StoreError> {
         self.conn.lock().unwrap().execute(
-            "INSERT INTO documents (access_key, sequence, status, signed_xml,
+            "INSERT INTO documents (owner_id, access_key, sequence, status, signed_xml,
                 issue_date, document_type, id_number, business_name, total_amount)
-             VALUES (?1, ?2, 'PENDIENTE', ?3, ?4, ?5, ?6, ?7, ?8)",
+             VALUES (?9, ?1, ?2, 'PENDIENTE', ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 access_key,
                 sequence,
@@ -185,7 +210,8 @@ impl Store {
                 m.document_type,
                 m.id_number,
                 m.business_name,
-                m.total_amount
+                m.total_amount,
+                owner
             ],
         )?;
         Ok(())
@@ -207,14 +233,15 @@ impl Store {
         Ok(())
     }
 
-    pub fn get_record(&self, access_key: &str) -> Result<Option<Record>, StoreError> {
+    /// Un comprobante de este usuario; los de otros usuarios no existen para él.
+    pub fn get_record(&self, owner: i64, access_key: &str) -> Result<Option<Record>, StoreError> {
         Ok(self
             .conn
             .lock()
             .unwrap()
             .query_row(
-                &format!("{SELECT} WHERE access_key=?1"),
-                params![access_key],
+                &format!("{SELECT} WHERE access_key=?1 AND owner_id=?2"),
+                params![access_key, owner],
                 row_to_record,
             )
             .optional()?)
@@ -222,9 +249,9 @@ impl Store {
 
     /// Busca comprobantes (más recientes primero), sin el XML para aligerar la respuesta.
     /// Devuelve la página pedida y el total de coincidencias.
-    pub fn search(&self, f: &Filter) -> Result<(Vec<Record>, u64), StoreError> {
-        let mut cond: Vec<&str> = vec![];
-        let mut args: Vec<rusqlite::types::Value> = vec![];
+    pub fn search(&self, owner: i64, f: &Filter) -> Result<(Vec<Record>, u64), StoreError> {
+        let mut cond: Vec<&str> = vec!["owner_id = ?"];
+        let mut args: Vec<rusqlite::types::Value> = vec![owner.into()];
         let mut add = |c: &'static str, v: String| {
             cond.push(c);
             args.push(v.into());
@@ -260,11 +287,7 @@ impl Store {
             );
             args.push(prefix(v).into());
         }
-        let where_clause = if cond.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", cond.join(" AND "))
-        };
+        let where_clause = format!(" WHERE {}", cond.join(" AND "));
 
         let c = self.conn.lock().unwrap();
         let total: u64 = c.query_row(
@@ -287,15 +310,30 @@ impl Store {
         Ok((v, total))
     }
 
-    pub fn pending(&self) -> Result<Vec<Record>, StoreError> {
+    /// Pendientes de un usuario, o de todos (`None`, para el reintento en segundo plano).
+    pub fn pending(&self, owner: Option<i64>) -> Result<Vec<Record>, StoreError> {
         let c = self.conn.lock().unwrap();
         let mut st = c.prepare(&format!(
-            "{SELECT} WHERE status='PENDIENTE' ORDER BY sequence"
+            "{SELECT} WHERE status='PENDIENTE' AND (?1 IS NULL OR owner_id = ?1) ORDER BY owner_id, sequence"
         ))?;
         let v = st
-            .query_map([], row_to_record)?
+            .query_map([owner], row_to_record)?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(v)
+    }
+
+    /// Un comprobante por clave de acceso, de cualquier usuario (uso interno del servicio).
+    pub(crate) fn get_record_any(&self, access_key: &str) -> Result<Option<Record>, StoreError> {
+        Ok(self
+            .conn
+            .lock()
+            .unwrap()
+            .query_row(
+                &format!("{SELECT} WHERE access_key=?1"),
+                params![access_key],
+                row_to_record,
+            )
+            .optional()?)
     }
 }
 
@@ -422,6 +460,87 @@ fn migrate_legacy_spanish_schema(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// Bases de una sola empresa: los datos pasan a tener dueño. Las filas existentes quedan con
+/// `owner_id = 0` y las adopta la primera cuenta que se cree (ver `adopt_legacy_data`).
+fn migrate_to_owners(conn: &Connection) -> Result<(), StoreError> {
+    let has_owner = |table: &str| -> Result<Option<bool>, StoreError> {
+        let cols: Vec<String> = conn
+            .prepare(&format!("PRAGMA table_info({table})"))?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<_, _>>()?;
+        Ok((!cols.is_empty()).then(|| cols.iter().any(|c| c == "owner_id")))
+    };
+    // (tabla, DDL nuevo, columnas que se copian)
+    let rebuilds: [(&str, &str, &str); 5] = [
+        (
+            "sequences",
+            "CREATE TABLE sequences (owner_id INTEGER NOT NULL DEFAULT 0, environment TEXT NOT NULL,
+              establishment TEXT NOT NULL, emission_point TEXT NOT NULL, last_value INTEGER NOT NULL,
+              PRIMARY KEY (owner_id, environment, establishment, emission_point))",
+            "environment, establishment, emission_point, last_value",
+        ),
+        (
+            "config",
+            "CREATE TABLE config (owner_id INTEGER NOT NULL DEFAULT 0, key TEXT NOT NULL,
+              value TEXT NOT NULL, PRIMARY KEY (owner_id, key))",
+            "key, value",
+        ),
+        (
+            "certificate",
+            "CREATE TABLE certificate (owner_id INTEGER PRIMARY KEY, p12_encrypted BLOB NOT NULL,
+              password_encrypted BLOB NOT NULL)",
+            "p12_encrypted, password_encrypted",
+        ),
+        (
+            "products",
+            "CREATE TABLE products (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER NOT NULL DEFAULT 0,
+              main_code TEXT NOT NULL, aux_code TEXT, name TEXT NOT NULL, price INTEGER NOT NULL,
+              vat TEXT NOT NULL DEFAULT '15', UNIQUE (owner_id, main_code))",
+            "id, main_code, aux_code, name, price, vat",
+        ),
+        (
+            "customers",
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY AUTOINCREMENT, owner_id INTEGER NOT NULL DEFAULT 0,
+              id_type TEXT NOT NULL, id_number TEXT NOT NULL, business_name TEXT NOT NULL,
+              address TEXT, phone TEXT, email TEXT, UNIQUE (owner_id, id_number))",
+            "id, id_type, id_number, business_name, address, phone, email",
+        ),
+    ];
+    for (table, ddl, cols) in rebuilds {
+        if has_owner(table)? == Some(false) {
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} RENAME TO {table}_old;
+                 {ddl};
+                 INSERT INTO {table} ({cols}) SELECT {cols} FROM {table}_old;
+                 DROP TABLE {table}_old;"
+            ))?;
+        }
+    }
+    if has_owner("documents")? == Some(false) {
+        conn.execute_batch("ALTER TABLE documents ADD COLUMN owner_id INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
+}
+
+/// Asigna a `owner` todo lo que existía antes de haber cuentas (instalaciones de una sola
+/// empresa). Se llama al crear el primer usuario.
+pub(crate) fn adopt_legacy_data(c: &Connection, owner: i64) -> Result<(), StoreError> {
+    for table in [
+        "sequences",
+        "config",
+        "certificate",
+        "products",
+        "customers",
+        "documents",
+    ] {
+        c.execute(
+            &format!("UPDATE {table} SET owner_id = ?1 WHERE owner_id = 0"),
+            [owner],
+        )?;
+    }
+    Ok(())
+}
+
 /// Agrega las columnas nuevas a bases creadas por versiones anteriores.
 fn migrate(conn: &Connection) -> Result<(), StoreError> {
     let existing: Vec<String> = conn
@@ -450,18 +569,18 @@ mod tests {
     fn sequences_increment_per_series_and_environment() {
         let s = Store::in_memory().unwrap();
         let p = Environment::Testing;
-        assert_eq!(s.reserve_sequence(p, "001", "001").unwrap(), 1);
-        assert_eq!(s.reserve_sequence(p, "001", "001").unwrap(), 2);
-        assert_eq!(s.reserve_sequence(p, "001", "002").unwrap(), 1);
+        assert_eq!(s.reserve_sequence(1, p, "001", "001").unwrap(), 1);
+        assert_eq!(s.reserve_sequence(1, p, "001", "001").unwrap(), 2);
+        assert_eq!(s.reserve_sequence(1, p, "001", "002").unwrap(), 1);
         assert_eq!(
-            s.reserve_sequence(Environment::Production, "001", "001")
+            s.reserve_sequence(1, Environment::Production, "001", "001")
                 .unwrap(),
             1
         );
-        s.set_sequence(p, "001", "001", 100).unwrap();
-        assert_eq!(s.reserve_sequence(p, "001", "001").unwrap(), 101);
-        s.set_sequence(p, "001", "001", 5).unwrap(); // no debe bajar
-        assert_eq!(s.reserve_sequence(p, "001", "001").unwrap(), 102);
+        s.set_sequence(1, p, "001", "001", 100).unwrap();
+        assert_eq!(s.reserve_sequence(1, p, "001", "001").unwrap(), 101);
+        s.set_sequence(1, p, "001", "001", 5).unwrap(); // no debe bajar
+        assert_eq!(s.reserve_sequence(1, p, "001", "001").unwrap(), 102);
     }
 
     fn meta(date: &str, id_number: &str, total: i64) -> Meta {
@@ -477,40 +596,46 @@ mod tests {
     #[test]
     fn document_lifecycle() {
         let s = Store::in_memory().unwrap();
-        s.save_pending("K1", 1, "<x/>", &meta("2026-11-20", "1712345678", 1725))
+        s.save_pending(1, "K1", 1, "<x/>", &meta("2026-11-20", "1712345678", 1725))
             .unwrap();
-        assert_eq!(s.pending().unwrap().len(), 1);
+        assert_eq!(s.pending(None).unwrap().len(), 1);
         s.update_status("K1", "AUTORIZADO", Some("K1"), Some("2026-11-22"), None)
             .unwrap();
-        let r = s.get_record("K1").unwrap().unwrap();
+        let r = s.get_record(1, "K1").unwrap().unwrap();
         assert_eq!(r.status, "AUTORIZADO");
         assert_eq!(r.total_amount, Some(1725));
         assert_eq!(r.authorization_number.as_deref(), Some("K1"));
-        assert!(s.pending().unwrap().is_empty());
-        assert!(s.get_record("nada").unwrap().is_none());
+        assert!(s.pending(None).unwrap().is_empty());
+        assert!(s.get_record(1, "nada").unwrap().is_none());
         assert!(s
-            .save_pending("K1", 2, "<y/>", &meta("2026-11-20", "1", 1))
+            .save_pending(1, "K1", 2, "<y/>", &meta("2026-11-20", "1", 1))
             .is_err());
     }
 
     #[test]
     fn search_with_filters_and_paging() {
         let s = Store::in_memory().unwrap();
-        s.save_pending("A1", 1, "<x/>", &meta("2026-11-20", "1712345678", 100))
+        s.save_pending(1, "A1", 1, "<x/>", &meta("2026-11-20", "1712345678", 100))
             .unwrap();
-        s.save_pending("A2", 2, "<x/>", &meta("2026-11-21", "9999999999999", 200))
-            .unwrap();
-        s.save_pending("B3", 3, "<x/>", &meta("2026-11-22", "1712345678", 300))
+        s.save_pending(
+            1,
+            "A2",
+            2,
+            "<x/>",
+            &meta("2026-11-21", "9999999999999", 200),
+        )
+        .unwrap();
+        s.save_pending(1, "B3", 3, "<x/>", &meta("2026-11-22", "1712345678", 300))
             .unwrap();
         s.update_status("B3", "AUTORIZADO", Some("NUM9"), None, None)
             .unwrap();
 
-        let (all, n) = s.search(&Filter::default()).unwrap();
+        let (all, n) = s.search(1, &Filter::default()).unwrap();
         assert_eq!(n, 3);
         assert_eq!(all[0].access_key, "B3"); // más reciente primero
         assert!(all.iter().all(|r| r.signed_xml.is_empty()));
 
-        let f = |f: Filter| s.search(&f).unwrap();
+        let f = |f: Filter| s.search(1, &f).unwrap();
         let (v, n) = f(Filter {
             date_from: Some("2026-11-21".into()),
             date_to: Some("2026-11-21".into()),
@@ -577,12 +702,40 @@ mod tests {
         )
         .unwrap();
         let s = Store::from_connection(c).unwrap();
-        let r = s.get_record("OLD").unwrap().unwrap();
+        let r = s.get_record(0, "OLD").unwrap().unwrap();
         assert_eq!(
             (r.issue_date, r.total_amount, r.document_type.as_str()),
             (None, None, "01")
         );
-        assert_eq!(s.search(&Filter::default()).unwrap().1, 1);
+        assert_eq!(s.search(0, &Filter::default()).unwrap().1, 1);
+    }
+
+    #[test]
+    fn first_account_adopts_pre_account_data() {
+        let s = Store::in_memory().unwrap();
+        // Data written before there were accounts belongs to owner 0.
+        s.reserve_sequence(0, Environment::Testing, "001", "001")
+            .unwrap();
+        s.save_pending(0, "OLD", 1, "<x/>", &meta("2026-11-20", "1", 1))
+            .unwrap();
+        let first = s
+            .create_user("owner", "owner-password", crate::accounts::Role::Admin)
+            .unwrap();
+        let second = s
+            .create_user("other", "other-password", crate::accounts::Role::Operator)
+            .unwrap();
+        assert!(s.get_record(first.id, "OLD").unwrap().is_some());
+        assert!(s.get_record(second.id, "OLD").unwrap().is_none());
+        assert_eq!(
+            s.reserve_sequence(first.id, Environment::Testing, "001", "001")
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            s.reserve_sequence(second.id, Environment::Testing, "001", "001")
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -601,9 +754,9 @@ mod tests {
         )
         .unwrap();
         let s = Store::from_connection(c).unwrap();
-        assert_eq!(s.get_record("K").unwrap().unwrap().sequence, 7);
+        assert_eq!(s.get_record(0, "K").unwrap().unwrap().sequence, 7);
         assert_eq!(
-            s.reserve_sequence(Environment::Testing, "001", "001")
+            s.reserve_sequence(0, Environment::Testing, "001", "001")
                 .unwrap(),
             8
         );

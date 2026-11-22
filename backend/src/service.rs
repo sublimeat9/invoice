@@ -111,15 +111,15 @@ impl Service {
     }
 
     /// Carga y valida la configuración necesaria para emitir.
-    pub fn config(&self) -> Result<Config, ServiceError> {
+    pub fn config(&self, owner: i64) -> Result<Config, ServiceError> {
         let (issuer, environment) = self
             .store
-            .load_issuer()?
+            .load_issuer(owner)?
             .ok_or_else(|| ServiceError::NotConfigured("faltan los datos del emisor".into()))?;
         issuer.validate().map_err(ServiceError::NotConfigured)?;
         let (p12, pass) = self
             .store
-            .load_certificate(&self.encryption_key)
+            .load_certificate(owner, &self.encryption_key)
             .map_err(ServiceError::NotConfigured)?
             .ok_or_else(|| {
                 ServiceError::NotConfigured("falta cargar el certificado .p12".into())
@@ -138,8 +138,8 @@ impl Service {
     }
 
     /// Emite una factura de punta a punta y devuelve el registro final guardado.
-    pub async fn issue(&self, s: InvoiceRequest) -> Result<Record, ServiceError> {
-        let cfg = self.config()?;
+    pub async fn issue(&self, owner: i64, s: InvoiceRequest) -> Result<Record, ServiceError> {
+        let cfg = self.config(owner)?;
         let mut invoice = Invoice {
             environment: cfg.environment,
             issuer: cfg.issuer.clone(),
@@ -154,6 +154,7 @@ impl Service {
         invoice.to_xml().map_err(ServiceError::InvalidData)?;
 
         invoice.sequence = self.store.reserve_sequence(
+            owner,
             cfg.environment,
             &cfg.issuer.establishment,
             &cfg.issuer.emission_point,
@@ -168,18 +169,20 @@ impl Service {
             total_amount: invoice.grand_total(),
         };
         self.store
-            .save_pending(&access_key, invoice.sequence, &signed, &meta)?;
+            .save_pending(owner, &access_key, invoice.sequence, &signed, &meta)?;
 
         self.send(&access_key, &signed).await
     }
 
     /// Reintenta los comprobantes que quedaron `PENDIENTE`. Devuelve el resultado de cada
     /// uno; un fallo de red en uno no detiene a los demás (queda `PENDIENTE`).
+    /// `owner`: solo los de ese usuario; `None`: los de todos (reintento en segundo plano).
     pub async fn retry_pending(
         &self,
+        owner: Option<i64>,
     ) -> Result<Vec<(String, Result<Record, ServiceError>)>, ServiceError> {
         let mut out = vec![];
-        for p in self.store.pending()? {
+        for p in self.store.pending(owner)? {
             let r = self.send(&p.access_key, &p.signed_xml).await;
             out.push((p.access_key, r));
         }
@@ -237,7 +240,7 @@ impl Service {
     fn record(&self, access_key: &str) -> Result<Record, StoreError> {
         Ok(self
             .store
-            .get_record(access_key)?
+            .get_record_any(access_key)?
             .expect("comprobante recién guardado"))
     }
 }

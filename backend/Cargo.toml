@@ -23,3 +23,10 @@ aes-gcm = "0.10"
 sha2 = "0.10"
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
+argon2 = "0.5"
+
+# Argon2 is deliberately slow; keep it fast enough in debug builds and tests.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3

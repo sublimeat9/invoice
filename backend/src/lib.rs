@@ -1,4 +1,5 @@
 pub mod access_key;
+pub mod accounts;
 pub mod api;
 pub mod catalog;
 pub mod crypto;
