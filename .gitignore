@@ -1,8 +1,21 @@
+# Rust
 target/
-*.p12
-*.pfx
-*.mp4
-*.pdf
-/*.xml
 *.db
 *.db-journal
+/*.xml
+/backend/*.xml
+
+# Certificados y secretos
+*.p12
+*.pfx
+.env
+.env.*
+
+# Material de referencia
+*.mp4
+*.pdf
+
+# Frontend (SvelteKit)
+node_modules/
+.svelte-kit/
+build/

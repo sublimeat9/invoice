@@ -78,11 +78,12 @@ impl Store {
         Ok(n)
     }
 
-    /// Fija el último secuencial usado (p. ej. al migrar desde otro sistema).
+    /// Fija el último secuencial usado (p. ej. al migrar desde otro sistema). Nunca lo
+    /// baja: si ya hay uno mayor, se conserva, para no repetir números.
     pub fn fijar_secuencial(&self, a: Ambiente, estab: &str, pto_emi: &str, ultimo: u32) -> Result<(), StoreError> {
         self.conn.lock().unwrap().execute(
             "INSERT INTO secuenciales (ambiente, estab, pto_emi, ultimo) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT (ambiente, estab, pto_emi) DO UPDATE SET ultimo = excluded.ultimo",
+             ON CONFLICT (ambiente, estab, pto_emi) DO UPDATE SET ultimo = MAX(ultimo, excluded.ultimo)",
             params![amb(a), estab, pto_emi, ultimo],
         )?;
         Ok(())
@@ -159,6 +160,8 @@ mod tests {
         assert_eq!(s.reservar_secuencial(Ambiente::Produccion, "001", "001").unwrap(), 1);
         s.fijar_secuencial(p, "001", "001", 100).unwrap();
         assert_eq!(s.reservar_secuencial(p, "001", "001").unwrap(), 101);
+        s.fijar_secuencial(p, "001", "001", 5).unwrap(); // no debe bajar
+        assert_eq!(s.reservar_secuencial(p, "001", "001").unwrap(), 102);
     }
 
     #[test]

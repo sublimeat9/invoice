@@ -1,7 +1,10 @@
 //! Emite una factura usando la capa de servicio (secuencial automático + SQLite).
 //!
 //!   P12_PASSWORD=... EMISOR_RUC=... EMISOR_RAZON_SOCIAL=... EMISOR_DIR_MATRIZ=... \
-//!     cargo run --example servicio -- <cert.p12> [base.db] [produccion] [reintentar]
+//!     cargo run --example servicio -- <cert.p12> [base.db] [produccion] [reintentar] [ultimo=N]
+//!
+//! `ultimo=N` indica el último secuencial ya usado (el siguiente será N+1); nunca baja
+//! un contador existente.
 use invoice_rust::{
     clave_acceso::Ambiente,
     factura::*,
@@ -30,6 +33,17 @@ async fn main() {
         ambiente,
         emisor,
     };
+
+    if let Some(n) = args.iter().find_map(|a| a.strip_prefix("ultimo=")) {
+        let n: u32 = n.parse().unwrap_or_else(|_| {
+            eprintln!("ultimo=N: N debe ser un número entero");
+            std::process::exit(2);
+        });
+        srv.store
+            .fijar_secuencial(ambiente, &srv.emisor.estab, &srv.emisor.pto_emi, n)
+            .expect("fijar secuencial");
+        println!("secuencial {}-{}: último usado >= {n}", srv.emisor.estab, srv.emisor.pto_emi);
+    }
 
     if args.iter().any(|a| a == "reintentar") {
         for (clave, r) in srv.reintentar_pendientes().await.expect("pendientes") {
