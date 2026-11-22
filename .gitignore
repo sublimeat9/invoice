@@ -24,9 +24,10 @@ build/
 !backend/tests/fixtures/*.p12
 
 # Tauri
-frontend/src-tauri/target/
-frontend/src-tauri/gen/
-frontend/src-tauri/app-icon.png
+node_modules/
+desktop/target/
+desktop/gen/
+desktop/app-icon.png
 
 # Android
 android/.gradle/

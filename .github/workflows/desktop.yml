@@ -28,22 +28,28 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-          cache-dependency-path: frontend/pnpm-lock.yaml
+          cache-dependency-path: |
+            frontend/pnpm-lock.yaml
+            desktop/pnpm-lock.yaml
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: frontend/src-tauri
+          workspaces: desktop
 
       - name: Install frontend dependencies
         working-directory: frontend
         run: pnpm install --frozen-lockfile
 
+      - name: Install desktop tooling
+        working-directory: desktop
+        run: pnpm install --frozen-lockfile
+
       - name: Build installers
-        working-directory: frontend
-        run: pnpm tauri build
+        working-directory: desktop
+        run: pnpm build
 
       - uses: actions/upload-artifact@v4
         with:
           name: installers-${{ matrix.os }}
-          path: frontend/src-tauri/target/release/bundle/**/*
+          path: desktop/target/release/bundle/**/*

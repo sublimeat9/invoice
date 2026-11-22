@@ -15,8 +15,7 @@
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
 		"dev:tauri": "vite dev --mode tauri",
-		"build:tauri": "vite build --mode tauri",
-		"tauri": "tauri"
+		"build:tauri": "vite build --mode tauri"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^8.0.1",
@@ -25,7 +24,6 @@
 		"@sveltejs/kit": "^3.2.0",
 		"@sveltejs/vite-plugin-svelte": "^7.3.1",
 		"@tauri-apps/api": "^2.12.5",
-		"@tauri-apps/cli": "^2.12.6",
 		"svelte": "^5.57.3",
 		"svelte-check": "^4.7.8",
 		"typescript": "^6.0.3",

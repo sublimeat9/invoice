@@ -9,10 +9,11 @@ al SRI y guarda su estado de autorización, desde la web, el escritorio o el tel
   la firma con XAdES-BES usando el certificado `.p12` del emisor y se comunica con los servicios
   SOAP de recepción y autorización del SRI. Guarda todo en SQLite y expone una API HTTP (axum).
   Reintenta en segundo plano los comprobantes que quedaron pendientes.
-- **Interfaz (`frontend/`)**: una aplicación SvelteKit en inglés, con un único código para dos
-  formas de uso. En la **web**, un servidor Node entrega la interfaz y reenvía las llamadas al
-  backend. En el **escritorio** (Tauri), la interfaz y el backend viven en el mismo proceso, sin
-  puerto de red, y los datos quedan en la carpeta de la aplicación.
+- **Interfaz (`frontend/`)**: una aplicación SvelteKit en inglés. En la **web**, un servidor Node
+  entrega la interfaz y reenvía las llamadas al backend.
+- **Escritorio (`desktop/`)**: la misma interfaz empaquetada con Tauri, con el backend dentro del
+  mismo proceso, sin puerto de red; los datos quedan en la carpeta de la aplicación. Los
+  instaladores para Windows, macOS y Linux los genera `.github/workflows/desktop.yml`.
 - **Android (`android/`)**: cliente nativo en Kotlin y Jetpack Compose que consume la misma API.
   Consulta y filtra comprobantes, reintenta los pendientes, comparte el XML, emite facturas y
   administra productos y clientes.

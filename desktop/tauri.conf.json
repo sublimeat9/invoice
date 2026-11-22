@@ -4,10 +4,10 @@
   "version": "0.1.0",
   "identifier": "app.invoicing.desktop",
   "build": {
-    "beforeDevCommand": "pnpm dev:tauri",
+    "beforeDevCommand": "pnpm --dir ../frontend dev:tauri",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build:tauri",
-    "frontendDist": "../build"
+    "beforeBuildCommand": "pnpm --dir ../frontend build:tauri",
+    "frontendDist": "../frontend/build"
   },
   "app": {
     "windows": [

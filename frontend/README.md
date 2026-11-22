@@ -13,7 +13,6 @@ con el backend pasa por `src/lib/api.ts`, que elige el transporte:
 cp .env.example .env
 pnpm install
 pnpm dev                 # web
-pnpm tauri dev           # escritorio
 ```
 
 Variable (solo servidor web): `BACKEND_URL`
@@ -22,7 +21,7 @@ Variable (solo servidor web): `BACKEND_URL`
 ## Compilación
 - `pnpm build`: servidor Node (`adapter-node`) con el proxy `/api`.
 - `pnpm build:tauri`: bundle estático (`adapter-static`) para la app de escritorio.
-- `pnpm tauri build`: instalador (ejecuta `build:tauri` antes).
+El instalador de escritorio ya no vive aquí: está en `../desktop`, que usa este bundle.
 
 ## Páginas
 - `/`: comprobantes con filtros, paginación, reintento de pendientes y reporte CSV.
