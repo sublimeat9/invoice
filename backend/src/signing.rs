@@ -94,6 +94,20 @@ impl CertSigner {
         })
     }
 
+    /// ¿El certificado pertenece a este RUC? Las entidades certificadoras del Ecuador incluyen el
+    /// RUC (o la cédula, en personas naturales: sus 10 primeros dígitos) como texto dentro del
+    /// certificado, en el sujeto o en una extensión; se busca en cualquiera de los dos sitios.
+    pub fn belongs_to_ruc(&self, ruc: &str) -> bool {
+        let contains = |needle: &str| {
+            !needle.is_empty()
+                && self
+                    .cert_der
+                    .windows(needle.len())
+                    .any(|w| w == needle.as_bytes())
+        };
+        contains(ruc) || (ruc.len() == 13 && contains(&ruc[..10]))
+    }
+
     /// Firma el XML de la factura y devuelve el documento completo (con declaración XML).
     pub fn sign(&self, invoice_xml: &str) -> Result<String, SigningError> {
         let body = invoice_xml

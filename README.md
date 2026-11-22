@@ -44,7 +44,8 @@ limitan por usuario y los registros tienen un tope global.
 
 El certificado `.p12` se guarda cifrado (AES-256-GCM) con una clave que no está en la base: en el
 servidor viene de `ENCRYPTION_KEY`; en el escritorio, del llavero del sistema. El certificado se
-carga solo desde la web o el escritorio, nunca desde el teléfono, y cada negocio solo puede usar el suyo. El cliente Android guarda el
+carga solo desde la web o el escritorio, nunca desde el teléfono, y cada negocio solo puede usar el suyo: al cargarla se verifica que el certificado contenga el RUC
+de la cuenta (o la cédula, en personas naturales), de modo que nadie emite por un RUC ajeno. El cliente Android guarda el
 token de sesión cifrado con el Keystore y solo permite HTTP sin cifrar hacia el emulador y
 `localhost`.
 

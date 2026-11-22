@@ -85,6 +85,8 @@ async fn mock_catastro() -> String {
 }
 
 const P12: &[u8] = include_bytes!("fixtures/test.p12");
+/// A valid certificate that carries no RUC at all.
+const P12_OTHER: &[u8] = include_bytes!("fixtures/no_ruc.p12");
 
 fn issuer() -> Issuer {
     Issuer {
@@ -1099,4 +1101,43 @@ async fn each_account_only_sees_its_own_business() {
             .unwrap(),
         1
     );
+}
+
+#[tokio::test]
+async fn signature_must_belong_to_the_accounts_ruc() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    let (app, _, token) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    let upload = |p12: &[u8]| {
+        let body =
+            serde_json::json!({ "p12_base64": STANDARD.encode(p12), "password": "test1234" });
+        put(&token, "/config/certificate", &body.to_string())
+    };
+    // Without the issuer's RUC there is nothing to compare against.
+    let r = app.clone().oneshot(upload(P12)).await.unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+    let issuer_json = serde_json::to_value(issuer()).unwrap();
+    let mut body = issuer_json.clone();
+    body["environment"] = "test".into();
+    let r = app
+        .clone()
+        .oneshot(put(&token, "/config/issuer", &body.to_string()))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+
+    // A certificate without this RUC is refused; the one that carries it is accepted.
+    let r = app.clone().oneshot(upload(P12_OTHER)).await.unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+    let r = app.clone().oneshot(upload(P12)).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+
+    // With the signature loaded, the account cannot switch to a RUC that is not the signature's.
+    body["ruc"] = "1790011674001".into();
+    let r = app
+        .clone()
+        .oneshot(put(&token, "/config/issuer", &body.to_string()))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
 }

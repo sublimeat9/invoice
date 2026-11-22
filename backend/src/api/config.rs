@@ -49,6 +49,8 @@ pub(super) async fn view_config(
     .into_response()
 }
 
+const NOT_YOURS: &str = "el certificado no pertenece a este RUC";
+
 #[derive(Deserialize)]
 pub struct IssuerConfigDto {
     #[serde(flatten)]
@@ -91,6 +93,18 @@ pub(super) async fn save_issuer(
             "ambiente debe ser pruebas o produccion",
         );
     };
+    // If a signature is already loaded, the RUC cannot be switched to one it does not belong to.
+    if let Ok(Some((p12, pass))) = st
+        .service
+        .store
+        .load_certificate(me.id, st.service.encryption_key())
+    {
+        if let Ok(signer) = CertSigner::from_p12(&p12, &pass) {
+            if !signer.belongs_to_ruc(&e.ruc) {
+                return error(StatusCode::BAD_REQUEST, NOT_YOURS);
+            }
+        }
+    }
     match st.service.store.save_issuer(me.id, &e, env_label) {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => service_error(e.into()),
@@ -119,10 +133,26 @@ pub(super) async fn save_certificate(
         );
     }
     // Se valida antes de guardar: contraseña correcta, clave RSA y certificado vigente.
-    let info = match CertSigner::from_p12(&p12, &c.password).and_then(|f| f.info()) {
+    let signer = match CertSigner::from_p12(&p12, &c.password) {
+        Ok(s) => s,
+        Err(e) => return error(StatusCode::BAD_REQUEST, &e.to_string()),
+    };
+    let info = match signer.info() {
         Ok(i) => i,
         Err(e) => return error(StatusCode::BAD_REQUEST, &e.to_string()),
     };
+    // The signature must belong to the RUC of this account (so nobody invoices as someone else).
+    match st.service.store.load_issuer(me.id) {
+        Ok(Some((issuer, _))) if signer.belongs_to_ruc(&issuer.ruc) => {}
+        Ok(Some(_)) => return error(StatusCode::BAD_REQUEST, NOT_YOURS),
+        Ok(None) => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                "primero guarde los datos del emisor (RUC)",
+            )
+        }
+        Err(e) => return service_error(e.into()),
+    }
     if !info.valid {
         return error(
             StatusCode::BAD_REQUEST,
