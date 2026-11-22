@@ -3,6 +3,7 @@
 //!   ENCRYPTION_KEY   clave con la que se cifra el certificado en la base (≥ 16 caracteres)
 //!   DB_PATH          archivo SQLite (por defecto facturas.db)
 //!   BIND             dirección de escucha (por defecto 127.0.0.1:3000)
+//!   CATASTRO_URL     (opcional) base del servicio de consulta de RUC del SRI, para pruebas
 //!   ADMIN_USER / ADMIN_PASSWORD   (opcionales) crean el primer administrador al arrancar si
 //!                    todavía no hay usuarios; sin ellas, el primero que abra la interfaz hace
 //!                    la configuración inicial. En un servidor expuesto, defínalas.
@@ -51,7 +52,10 @@ async fn main() {
     let db = std::env::var("DB_PATH").unwrap_or_else(|_| "facturas.db".into());
     let bind = std::env::var("BIND").unwrap_or_else(|_| "127.0.0.1:3000".into());
 
-    let service = Service::new(Store::open(&db).expect("abrir base de datos"), &secret);
+    let mut service = Service::new(Store::open(&db).expect("abrir base de datos"), &secret);
+    if let Ok(base) = std::env::var("CATASTRO_URL") {
+        service = service.with_catastro_base(base);
+    }
     bootstrap_admin(&service.store);
     let state = Arc::new(AppState::new(service));
 
