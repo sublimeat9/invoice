@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="160" viewBox="0 0 640 160" role="img">
+  <title>Invoicing</title>
+  <g transform="scale(0.5625) translate(0 0)">
+    <rect width="256" height="256" rx="56" fill="#2f4fd8"/>
+    <path d="M76 52h74l40 40v112H76z" fill="#fff"/>
+    <path d="M150 52v40h40z" fill="#c9d3fa"/>
+    <path d="M102 128h62M102 152h62M102 176h38" stroke="#2f4fd8" stroke-width="10" stroke-linecap="round"/>
+  </g>
+  <text x="176" y="102" font-family="Inter, system-ui, sans-serif" font-size="64" font-weight="700" fill="#14181f">Invoicing</text>
+</svg>

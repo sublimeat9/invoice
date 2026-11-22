@@ -1,57 +1,55 @@
 # invoice-rust
 
-Facturación electrónica para el SRI de Ecuador.
+Sistema de facturación electrónica para el SRI de Ecuador. Emite facturas, las firma, las envía
+al SRI y guarda su estado de autorización, desde la web, el escritorio o el teléfono.
 
-- `backend/`: Rust (clave de acceso, XML, firma XAdES-BES, cliente SOAP del SRI, SQLite y
-  API HTTP con axum). Ejemplos en `backend/examples/` (`issue`, `query`, `sign`).
-- `android/`: cliente nativo (Kotlin + Jetpack Compose) que consume la misma API.
-- `frontend/`: SvelteKit (SPA). Se usa de dos formas con el mismo código:
-  - **Web**: un servidor Node sirve la interfaz y reenvía `/api/*` al backend añadiendo el token.
-  - **Escritorio (Tauri)**: `frontend/src-tauri` empaqueta la interfaz con el backend dentro del
-    mismo proceso; sin puerto, sin token y con los datos en la carpeta de la aplicación.
+## Qué incluye
 
-## Arranque local (web)
-```
-# 1) backend (desde backend/)
-API_TOKEN=<≥16 caracteres> ENCRYPTION_KEY=<≥16 caracteres> cargo run
+- **Backend (`backend/`)**: escrito en Rust. Genera la clave de acceso y el XML de la factura,
+  la firma con XAdES-BES usando el certificado `.p12` del emisor y se comunica con los servicios
+  SOAP de recepción y autorización del SRI. Guarda todo en SQLite y expone una API HTTP (axum).
+  Reintenta en segundo plano los comprobantes que quedaron pendientes.
+- **Interfaz (`frontend/`)**: una aplicación SvelteKit en inglés, con un único código para dos
+  formas de uso. En la **web**, un servidor Node entrega la interfaz y reenvía las llamadas al
+  backend. En el **escritorio** (Tauri), la interfaz y el backend viven en el mismo proceso, sin
+  puerto de red, y los datos quedan en la carpeta de la aplicación.
+- **Android (`android/`)**: cliente nativo en Kotlin y Jetpack Compose que consume la misma API.
+  Consulta y filtra comprobantes, reintenta los pendientes, comparte el XML, emite facturas y
+  administra productos y clientes.
+- **Marca (`brand/`)**: logotipo, paleta y tipografía de la aplicación.
 
-# 2) frontend (desde frontend/); mismo API_TOKEN
-cp .env.example .env && pnpm install && pnpm dev
-```
+## Cuentas y negocios
 
-## Escritorio (Tauri)
-```
-cd frontend
-pnpm install
-pnpm tauri dev        # ventana con recarga en caliente
-pnpm tauri build      # instalador para el sistema actual
-```
-Requiere Rust y, en Linux, `webkit2gtk-4.1` (ver <https://tauri.app/start/prerequisites/>).
-La clave que cifra el certificado se guarda en el llavero del sistema (o, si no hay, en un
-archivo con permisos 0600 junto a la base). Los instaladores para Windows, macOS y Linux los
-genera `.github/workflows/desktop.yml`.
+Cada cuenta es un negocio independiente: tiene su propio RUC y datos de emisor, su firma
+electrónica `.p12`, su ambiente (pruebas o producción), sus productos, clientes, secuenciales y
+comprobantes. Nadie ve los datos de otra cuenta.
 
-El emisor, el ambiente y el certificado `.p12` se configuran desde la página **Settings**
-(el certificado se guarda cifrado; si se pierde la clave hay que volver a cargarlo). Productos y
-clientes se administran desde sus páginas.
+Cualquier persona puede crearse una cuenta desde la pantalla de acceso (registro público), y la
+cuenta queda activa de inmediato. Luego carga su RUC y su firma en **Settings** y ya puede emitir.
+La primera cuenta se crea en la primera ejecución (o con `ADMIN_USER` y `ADMIN_PASSWORD` en un
+servidor) y es administradora: además de su propio negocio, puede ver, desactivar y cambiar el rol
+de las demás cuentas, sin acceso a sus datos de facturación. Las instalaciones de una sola empresa
+anteriores a las cuentas pasan a ser el negocio de esa primera cuenta.
 
-## Android
-```
-cd android
-./gradlew assembleDebug                      # app/build/outputs/apk/debug/app-debug.apk
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-En **Settings** de la app se indican la URL del servidor y el `API_TOKEN` (el token se guarda cifrado con
-una clave del Android Keystore). En el emulador, el backend local es `http://10.0.2.2:3000`; fuera de la
-red local use HTTPS (el HTTP en claro solo está permitido para `10.0.2.2`, `localhost` y `127.0.0.1`).
-Muestra comprobantes (filtros, reintento, compartir XML), emite facturas y administra productos y
-clientes. El emisor y el certificado `.p12` se configuran desde la web o el escritorio, para que el
-certificado no pase por el teléfono.
+Las contraseñas se guardan con Argon2. Al iniciar sesión se recibe un token que vence a los 7 días y
+se revoca al cerrar sesión, cambiar la contraseña o desactivar la cuenta. Los intentos fallidos se
+limitan por usuario y los registros tienen un tope global.
+
+## Seguridad de los datos
+
+El certificado `.p12` se guarda cifrado (AES-256-GCM) con una clave que no está en la base: en el
+servidor viene de `ENCRYPTION_KEY`; en el escritorio, del llavero del sistema. El certificado se
+carga solo desde la web o el escritorio, nunca desde el teléfono, y cada negocio solo puede usar el suyo. El cliente Android guarda el
+token de sesión cifrado con el Keystore y solo permite HTTP sin cifrar hacia el emulador y
+`localhost`.
 
 ## API
-Rutas en inglés (`/invoices`, `/invoices/report.csv`, `/invoices/retry`, `/config`,
-`/config/issuer`, `/config/certificate`, `/products`, `/customers`), JSON con claves en inglés y
-montos en centavos. Los estados del SRI (`AUTORIZADO`, `PENDIENTE`…) y el XML se mantienen como los
-define la ficha técnica.
 
-Pruebas: `cd backend && cargo test` · `cd frontend && pnpm check`
+Rutas y claves JSON en inglés (`/invoices`, `/products`, `/customers`, `/config/...`, `/auth/...`,
+`/users`), montos en centavos. Los estados del SRI (`AUTORIZADO`, `PENDIENTE`…) y las etiquetas
+del XML se conservan tal como las define la ficha técnica.
+
+## Estado
+
+El flujo completo funciona contra el ambiente de pruebas del SRI. Pendientes: RIDE en PDF y envío
+por correo, otros tipos de comprobante, varias formas de pago y varios establecimientos.

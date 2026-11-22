@@ -1,0 +1,23 @@
+/* Brand palette. Same values as frontend/src/routes/styles.css and the Android theme. */
+:root {
+	--brand-accent: #2f4fd8;
+	--brand-accent-hover: #2540b8;
+	--brand-accent-soft: #eaeefc;
+	--brand-ink: #14181f;
+	--brand-paper: #f7f8fa;
+	--brand-ok: #137a4b;
+	--brand-warn: #946200;
+	--brand-bad: #b42318;
+}
+@media (prefers-color-scheme: dark) {
+	:root {
+		--brand-accent: #7c97f5;
+		--brand-accent-hover: #96aaf8;
+		--brand-accent-soft: #1d2745;
+		--brand-ink: #e8ebf0;
+		--brand-paper: #0e1116;
+		--brand-ok: #4cc38a;
+		--brand-warn: #e3b341;
+		--brand-bad: #f97066;
+	}
+}
