@@ -1,21 +1,31 @@
 <script lang="ts">
+	import { formatear } from '#lib/dinero.ts';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 	let f = $derived(data.factura);
 </script>
 
-<p><a href="/">← Volver</a></p>
-<h1>Factura {String(f.secuencial).padStart(9, '0')}</h1>
+<a class="volver" href="/">← Comprobantes</a>
+<div class="cabecera">
+	<div>
+		<h1>Factura {f.numero}</h1>
+		<p><span class="etiqueta {f.estado.replaceAll(' ', '_')}">{f.estado}</span></p>
+	</div>
+	<a class="boton sec" href="/facturas/{f.clave_acceso}/xml" download>Descargar XML firmado</a>
+</div>
 
-<div class="panel">
-	<p>Estado: <span class="estado {f.estado.replaceAll(' ', '_')}">{f.estado}</span></p>
-	<p>Clave de acceso: <span class="mono">{f.clave_acceso}</span></p>
-	<p>Número de autorización: <span class="mono">{f.numero_autorizacion ?? '—'}</span></p>
-	<p>Fecha de autorización: {f.fecha_autorizacion ?? '—'}</p>
-	<p><a class="boton" href="/facturas/{f.clave_acceso}/xml" download>Descargar XML firmado</a></p>
+<div class="tarjeta">
+	<dl class="datos">
+		<dt>Fecha de emisión</dt><dd>{f.fecha_emision ?? '—'}</dd>
+		<dt>Comprador</dt><dd>{f.razon_social ?? '—'}{f.identificacion ? ` · ${f.identificacion}` : ''}</dd>
+		<dt>Valor total</dt><dd class="num">{f.valor_total === null ? '—' : formatear(f.valor_total)}</dd>
+		<dt>Clave de acceso</dt><dd class="mono">{f.clave_acceso}</dd>
+		<dt>Nro. de autorización</dt><dd class="mono">{f.numero_autorizacion ?? '—'}</dd>
+		<dt>Fecha de autorización</dt><dd>{f.fecha_autorizacion ?? '—'}</dd>
+	</dl>
 </div>
 
 {#if f.mensajes}
-	<div class="panel"><strong>Mensajes del SRI</strong><pre>{f.mensajes}</pre></div>
+	<div class="tarjeta"><h2>Mensajes del SRI</h2><pre>{f.mensajes}</pre></div>
 {/if}

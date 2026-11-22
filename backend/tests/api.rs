@@ -108,8 +108,30 @@ async fn emitir_y_consultar() {
 
     let (s, l) = json(app.clone().oneshot(req("GET", "/facturas", Some(TOKEN), None)).await.unwrap()).await;
     assert_eq!(s, StatusCode::OK);
-    assert_eq!(l.as_array().unwrap().len(), 1);
-    assert!(l[0].get("xml_firmado").is_none());
+    assert_eq!(l["total"], 1);
+    let it = &l["items"][0];
+    assert!(it.get("xml_firmado").is_none());
+    assert_eq!(it["numero"], "001-001-000000001");
+    assert_eq!(it["valor_total"], 1725);
+    assert_eq!(it["identificacion"], "9999999999999");
+    assert_eq!(it["tipo_comprobante"], "01");
+
+    // Filtros
+    let q = |uri: &str| {
+        let app = app.clone();
+        let uri = uri.to_string();
+        async move { json(app.oneshot(req("GET", &uri, Some(TOKEN), None)).await.unwrap()).await }
+    };
+    assert_eq!(q("/facturas?identificacion=17").await.1["total"], 0);
+    assert_eq!(q("/facturas?identificacion=99999&estado=AUTORIZADO").await.1["total"], 1);
+    assert_eq!(q("/facturas?desde=2999-01-01").await.1["total"], 0);
+    assert_eq!(q("/facturas?desde=ayer").await.0, StatusCode::BAD_REQUEST);
+    let r = app.clone().oneshot(req("GET", "/facturas/reporte.csv", Some(TOKEN), None)).await.unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    assert!(r.headers()["content-type"].to_str().unwrap().starts_with("text/csv"));
+    let csv = String::from_utf8(r.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+    assert_eq!(csv.lines().count(), 2);
+    assert!(csv.contains("\"001-001-000000001\"") && csv.contains("\"17.25\""));
 
     // El secuencial avanza.
     let (_, v2) = json(app.oneshot(req("POST", "/facturas", Some(TOKEN), Some(FACTURA))).await.unwrap()).await;

@@ -33,11 +33,11 @@
 	const v = (k: string, def = '') => form?.valores?.[k] ?? def;
 </script>
 
-<p><a href="/">← Volver</a></p>
-<h1>Nueva factura</h1>
+<a class="volver" href="/">← Comprobantes</a>
+<div class="cabecera"><h1>Nueva factura</h1></div>
 
 {#if form?.error}
-	<div class="panel error">{form.error}</div>
+	<div class="aviso error">{form.error}</div>
 {/if}
 
 <form
@@ -50,11 +50,13 @@
 		};
 	}}
 >
-	<div class="panel">
-		<strong>Comprador</strong>
+	<div class="diseno-form">
+	<div>
+	<div class="tarjeta">
+		<h2>Comprador</h2>
 		<p>
-			<label style="display:flex;gap:.5rem;align-items:center">
-				<input type="checkbox" name="consumidor_final" bind:checked={consumidorFinal} style="width:auto" />
+			<label class="casilla">
+				<input type="checkbox" name="consumidor_final" bind:checked={consumidorFinal} />
 				Consumidor final
 			</label>
 		</p>
@@ -83,18 +85,21 @@
 				<input id="dir" name="direccion" value={v('direccion')} />
 			</div>
 		{/if}
-		<div style="margin-top:.75rem">
-			<label for="email">Correo (opcional)</label>
-			<input id="email" name="email" type="email" value={v('email')} />
+		<div class="fila" style="margin-top:.9rem">
+			<div>
+				<label for="email">Correo (opcional)</label>
+				<input id="email" name="email" type="email" value={v('email')} />
+			</div>
 		</div>
 	</div>
 
-	<div class="panel">
-		<strong>Detalle</strong>
+	<div class="tarjeta">
+		<h2>Detalle</h2>
 		{#each lineas as l, i (i)}
-			<div class="fila" style="margin-top:.75rem">
+			<div class="linea">
+			<div class="fila">
 				<div><label for="c{i}">Código</label><input id="c{i}" bind:value={l.codigo} placeholder="S/C" /></div>
-				<div style="grid-column: span 2">
+				<div class="grande">
 					<label for="d{i}">Descripción</label><input id="d{i}" bind:value={l.descripcion} />
 				</div>
 				<div>
@@ -121,16 +126,18 @@
 				</div>
 				<div style="align-self:end">
 					{#if lineas.length > 1}
-						<button type="button" class="sec" onclick={() => lineas.splice(i, 1)}>Quitar</button>
+						<button type="button" class="sec chico peligro" onclick={() => lineas.splice(i, 1)}>Quitar</button>
 					{/if}
 				</div>
+			</div>
 			</div>
 		{/each}
 		<button type="button" class="sec" onclick={() => lineas.push(vacia())}>+ Agregar línea</button>
 		<input type="hidden" name="lineas" value={JSON.stringify(lineas)} />
 	</div>
 
-	<div class="panel">
+	<div class="tarjeta">
+		<h2>Pago</h2>
 		<div class="fila">
 			<div>
 				<label for="fp">Forma de pago</label>
@@ -143,9 +150,17 @@
 				</select>
 			</div>
 		</div>
-		<p class="der">Subtotal: {formatear(resumen.subtotal)}</p>
-		<p class="der">IVA: {formatear(resumen.iva)}</p>
-		<p class="der"><strong>Total: {formatear(resumen.total)}</strong></p>
+	</div>
+	</div>
+
+	<aside class="tarjeta resumen">
+		<h2>Resumen</h2>
+		<dl>
+			<dt>Subtotal</dt><dd class="num">{formatear(resumen.subtotal)}</dd>
+			<dt>IVA</dt><dd class="num">{formatear(resumen.iva)}</dd>
+			<dt>Total</dt><dd class="num total">{formatear(resumen.total)}</dd>
+		</dl>
 		<button disabled={enviando}>{enviando ? 'Enviando al SRI…' : 'Emitir factura'}</button>
+	</aside>
 	</div>
 </form>

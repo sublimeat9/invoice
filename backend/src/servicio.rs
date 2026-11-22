@@ -8,7 +8,7 @@ use crate::{
     factura::{Comprador, Emisor, Factura, Linea},
     firma::{FirmaError, Firmador},
     sri::{Autorizacion, Mensaje, SriClient, SriError},
-    store::{Registro, Store, StoreError},
+    store::{Meta, Registro, Store, StoreError},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -83,7 +83,14 @@ impl Servicio {
             self.store.reservar_secuencial(self.ambiente, &self.emisor.estab, &self.emisor.pto_emi)?;
         let (xml, clave) = factura.to_xml().map_err(ServicioError::Datos)?;
         let firmado = self.firmador.firmar(&xml)?;
-        self.store.guardar_pendiente(&clave, factura.secuencial, &firmado)?;
+        let meta = Meta {
+            fecha_emision: factura.fecha_iso(),
+            tipo_comprobante: "01".into(),
+            identificacion: factura.comprador.identificacion.clone(),
+            razon_social: factura.comprador.razon_social.clone(),
+            valor_total: factura.importe_total(),
+        };
+        self.store.guardar_pendiente(&clave, factura.secuencial, &firmado, &meta)?;
 
         self.enviar(&clave, &firmado).await
     }

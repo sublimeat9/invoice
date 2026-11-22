@@ -172,6 +172,17 @@ fn tag(out: &mut String, name: &str, val: &str) {
 }
 
 impl Factura {
+    /// Total a pagar en centavos (subtotal + IVA).
+    pub fn importe_total(&self) -> i64 {
+        self.lineas.iter().map(|l| l.base() + l.iva_valor()).sum()
+    }
+
+    /// Fecha de emisión como `aaaa-mm-dd` (ordenable en SQL).
+    pub fn fecha_iso(&self) -> String {
+        let f = &self.fecha_emision;
+        format!("{}-{}-{}", &f[4..8], &f[2..4], &f[0..2])
+    }
+
     pub fn clave_acceso(&self) -> Result<String, String> {
         clave_acceso::generar(&ClaveAccesoParams {
             fecha_emision: &self.fecha_emision,
@@ -351,6 +362,8 @@ mod tests {
         let (xml, clave) = ejemplo().to_xml().unwrap();
         assert!(clave_acceso::validar(&clave));
         assert!(xml.contains("<importeTotal>17.25</importeTotal>"));
+        assert_eq!(ejemplo().importe_total(), 1725);
+        assert_eq!(ejemplo().fecha_iso(), "2026-11-20");
         assert!(xml.contains("<valor>2.25</valor>"));
         assert!(xml.contains("PRUEBAS &amp; CIA"));
         roxmltree::Document::parse(&xml).unwrap();

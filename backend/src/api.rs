@@ -1,7 +1,9 @@
 //! API HTTP (JSON) sobre `Servicio`.
 //!
 //! - `GET  /health`                 sin autenticación
-//! - `GET  /facturas`               últimos 50 comprobantes (sin XML)
+//! - `GET  /facturas`               búsqueda: ?desde=&hasta=&identificacion=&tipo=&estado=&clave=
+//!                                  &limite=&pagina= → `{ total, items }` (sin XML)
+//! - `GET  /facturas/reporte.csv`   mismos filtros, en CSV
 //! - `POST /facturas`               emite una factura (201 si hay resultado final, 202 si quedó PENDIENTE)
 //! - `GET  /facturas/{clave}`       estado guardado + XML firmado
 //! - `POST /facturas/reintentar`    reenvía las PENDIENTE
@@ -11,10 +13,10 @@
 use crate::{
     factura::{Comprador, Iva, Linea},
     servicio::{Servicio, ServicioError, SolicitudFactura},
-    store::Registro,
+    store::{Filtro, Registro},
 };
 use axum::{
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{header, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -31,7 +33,8 @@ pub struct AppState {
 
 pub fn router(state: Arc<AppState>) -> Router {
     let protegidas = Router::new()
-        .route("/facturas", post(emitir).get(listar))
+        .route("/facturas", post(emitir).get(buscar))
+        .route("/facturas/reporte.csv", get(reporte))
         .route("/facturas/reintentar", post(reintentar))
         .route("/facturas/{clave}", get(obtener))
         .layer(middleware::from_fn_with_state(state.clone(), auth))
@@ -113,7 +116,15 @@ pub struct FacturaDto {
 #[derive(Serialize)]
 pub struct RegistroDto {
     pub clave_acceso: String,
+    /// `estab-ptoEmi-secuencial`, p. ej. `001-001-000000001`.
+    pub numero: String,
     pub secuencial: u32,
+    pub fecha_emision: Option<String>,
+    pub tipo_comprobante: String,
+    pub identificacion: Option<String>,
+    pub razon_social: Option<String>,
+    /// Total en centavos.
+    pub valor_total: Option<i64>,
     pub estado: String,
     pub numero_autorizacion: Option<String>,
     pub fecha_autorizacion: Option<String>,
@@ -125,14 +136,29 @@ pub struct RegistroDto {
 impl RegistroDto {
     fn de(r: Registro, con_xml: bool) -> Self {
         Self {
+            numero: numero_comprobante(&r.clave_acceso),
             clave_acceso: r.clave_acceso,
             secuencial: r.secuencial,
+            fecha_emision: r.fecha_emision,
+            tipo_comprobante: r.tipo_comprobante,
+            identificacion: r.identificacion,
+            razon_social: r.razon_social,
+            valor_total: r.valor_total,
             estado: r.estado,
             numero_autorizacion: r.numero_autorizacion,
             fecha_autorizacion: r.fecha_autorizacion,
             mensajes: r.mensajes,
             xml_firmado: con_xml.then_some(r.xml_firmado),
         }
+    }
+}
+
+/// La serie y el secuencial van en las posiciones 24..39 de la clave de acceso.
+fn numero_comprobante(clave: &str) -> String {
+    if clave.len() == 49 && clave.is_ascii() {
+        format!("{}-{}-{}", &clave[24..27], &clave[27..30], &clave[30..39])
+    } else {
+        String::new()
     }
 }
 
@@ -218,9 +244,127 @@ async fn reintentar(State(st): State<Arc<AppState>>) -> Response {
     }
 }
 
-async fn listar(State(st): State<Arc<AppState>>) -> Response {
-    match st.servicio.store.listar(50) {
-        Ok(v) => Json(v.into_iter().map(|r| RegistroDto::de(r, false)).collect::<Vec<_>>()).into_response(),
+#[derive(Deserialize, Default)]
+pub struct BusquedaQuery {
+    pub desde: Option<String>,
+    pub hasta: Option<String>,
+    pub identificacion: Option<String>,
+    pub tipo: Option<String>,
+    pub estado: Option<String>,
+    pub clave: Option<String>,
+    pub limite: Option<u32>,
+    /// Empieza en 1.
+    pub pagina: Option<u32>,
+}
+
+fn fecha_ok(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 10
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b.iter().enumerate().all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
+}
+
+fn filtro(q: BusquedaQuery) -> Result<Filtro, Response> {
+    let vacio = |o: Option<String>| o.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let desde = vacio(q.desde);
+    let hasta = vacio(q.hasta);
+    for f in [&desde, &hasta].into_iter().flatten() {
+        if !fecha_ok(f) {
+            return Err(error(StatusCode::BAD_REQUEST, "las fechas deben tener formato aaaa-mm-dd"));
+        }
+    }
+    let limite = q.limite.unwrap_or(50).clamp(1, 10_000);
+    Ok(Filtro {
+        desde,
+        hasta,
+        identificacion: vacio(q.identificacion),
+        tipo_comprobante: vacio(q.tipo),
+        estado: vacio(q.estado),
+        clave: vacio(q.clave),
+        limite: Some(limite),
+        desplazamiento: Some(q.pagina.unwrap_or(1).max(1).saturating_sub(1).saturating_mul(limite)),
+    })
+}
+
+async fn buscar(State(st): State<Arc<AppState>>, Query(q): Query<BusquedaQuery>) -> Response {
+    let f = match filtro(q) {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    match st.servicio.store.buscar(&f) {
+        Ok((v, total)) => Json(serde_json::json!({
+            "total": total,
+            "items": v.into_iter().map(|r| RegistroDto::de(r, false)).collect::<Vec<_>>(),
+        }))
+        .into_response(),
         Err(e) => error_servicio(e.into()),
+    }
+}
+
+/// Celda CSV: se entrecomilla y se neutralizan fórmulas (`=`, `+`, `-`, `@`) para que
+/// abrir el reporte en una hoja de cálculo no ejecute contenido del comprador.
+fn celda(s: &str) -> String {
+    let s = if s.starts_with(['=', '+', '-', '@', '\t', '\r']) { format!("'{s}") } else { s.to_string() };
+    format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+async fn reporte(State(st): State<Arc<AppState>>, Query(mut q): Query<BusquedaQuery>) -> Response {
+    q.limite = Some(10_000);
+    q.pagina = Some(1);
+    let f = match filtro(q) {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    let items = match st.servicio.store.buscar(&f) {
+        Ok((v, _)) => v,
+        Err(e) => return error_servicio(e.into()),
+    };
+    let mut out = String::from(
+        "Fecha emisión,Tipo,Número,Identificación,Razón social,Clave de acceso,Nro. autorización,Estado,Valor total\r\n",
+    );
+    for r in items {
+        let total = r.valor_total.map(|c| format!("{}.{:02}", c / 100, c % 100)).unwrap_or_default();
+        let fila = [
+            r.fecha_emision.clone().unwrap_or_default(),
+            r.tipo_comprobante.clone(),
+            numero_comprobante(&r.clave_acceso),
+            r.identificacion.clone().unwrap_or_default(),
+            r.razon_social.clone().unwrap_or_default(),
+            r.clave_acceso.clone(),
+            r.numero_autorizacion.clone().unwrap_or_default(),
+            r.estado.clone(),
+            total,
+        ];
+        out.push_str(&fila.iter().map(|c| celda(c)).collect::<Vec<_>>().join(","));
+        out.push_str("\r\n");
+    }
+    (
+        [
+            (header::CONTENT_TYPE, "text/csv; charset=utf-8"),
+            (header::CONTENT_DISPOSITION, "attachment; filename=\"comprobantes.csv\""),
+        ],
+        out,
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn csv_neutraliza_formulas_y_comillas() {
+        assert_eq!(celda("=1+1"), "\"'=1+1\"");
+        assert_eq!(celda("Juan \"El\" Perez"), "\"Juan \"\"El\"\" Perez\"");
+        assert_eq!(celda("normal"), "\"normal\"");
+    }
+
+    #[test]
+    fn numero_y_fechas() {
+        assert_eq!(numero_comprobante("2011202601140054458900110010010000000011234567819"), "001-001-000000001");
+        assert_eq!(numero_comprobante("corta"), "");
+        assert!(fecha_ok("2026-11-22"));
+        assert!(!fecha_ok("22/11/2026") && !fecha_ok("2026-11-2x") && !fecha_ok("2026-1-22"));
     }
 }
