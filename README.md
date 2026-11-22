@@ -9,8 +9,8 @@ al SRI y guarda su estado de autorización, desde la web, el escritorio o el tel
   la firma con XAdES-BES usando el certificado `.p12` del emisor y se comunica con los servicios
   SOAP de recepción y autorización del SRI. Guarda todo en SQLite y expone una API HTTP (axum).
   Reintenta en segundo plano los comprobantes que quedaron pendientes.
-- **Interfaz (`frontend/`)**: una aplicación SvelteKit en inglés. En la **web**, un servidor Node
-  entrega la interfaz y reenvía las llamadas al backend.
+- **Web (`web/`)**: una aplicación SvelteKit en inglés; un servidor Node entrega la interfaz y
+  reenvía las llamadas al backend.
 - **Escritorio (`desktop/`)**: la misma interfaz empaquetada con Tauri, con el backend dentro del
   mismo proceso, sin puerto de red; los datos quedan en la carpeta de la aplicación. Los
   instaladores para Windows, macOS y Linux los genera `.github/workflows/desktop.yml`.

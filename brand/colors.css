@@ -1,4 +1,4 @@
-/* Brand palette. Same values as frontend/src/routes/styles.css and the Android theme. */
+/* Brand palette. Same values as web/src/routes/styles.css and the Android theme. */
 :root {
 	--brand-accent: #2f4fd8;
 	--brand-accent-hover: #2540b8;

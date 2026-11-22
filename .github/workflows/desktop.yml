@@ -29,7 +29,7 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: |
-            frontend/pnpm-lock.yaml
+            web/pnpm-lock.yaml
             desktop/pnpm-lock.yaml
 
       - uses: dtolnay/rust-toolchain@stable
@@ -37,8 +37,8 @@ jobs:
         with:
           workspaces: desktop
 
-      - name: Install frontend dependencies
-        working-directory: frontend
+      - name: Install web dependencies
+        working-directory: web
         run: pnpm install --frozen-lockfile
 
       - name: Install desktop tooling
