@@ -33,7 +33,11 @@ private enum class Tab(val route: String, val label: String, val icon: ImageVect
 }
 
 @Composable
-fun InvoicingApp(api: ApiClient, settings: SecureSettings) {
+fun InvoicingApp(api: ApiClient, settings: SecureSettings, auth: AuthState) {
+    if (auth.user == null) {
+        LoginScreen(api, settings, auth)
+        return
+    }
     val nav = rememberNavController()
     val backStack by nav.currentBackStackEntryAsState()
     val current = backStack?.destination?.route
@@ -93,7 +97,7 @@ fun InvoicingApp(api: ApiClient, settings: SecureSettings) {
             composable("customer/{id}") {
                 CustomerFormScreen(api, it.arguments!!.getString("id")!!, onDone = { nav.popBackStack() })
             }
-            composable(Tab.Settings.route) { SettingsScreen(api, settings) }
+            composable(Tab.Settings.route) { SettingsScreen(api, settings, auth) }
         }
     }
 }

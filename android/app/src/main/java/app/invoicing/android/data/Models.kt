@@ -184,3 +184,21 @@ data class NewInvoice(
         return json
     }
 }
+
+data class UserInfo(val id: Long, val username: String, val role: String) {
+    val isAdmin get() = role == "admin"
+
+    companion object {
+        fun from(j: JSONObject) = UserInfo(j.getLong("id"), j.getString("username"), j.getString("role"))
+    }
+}
+
+data class LoginResult(val token: String, val expiresAt: Long, val user: UserInfo) {
+    companion object {
+        fun from(j: JSONObject) = LoginResult(
+            j.getString("token"),
+            j.getLong("expires_at"),
+            UserInfo.from(j.getJSONObject("user")),
+        )
+    }
+}

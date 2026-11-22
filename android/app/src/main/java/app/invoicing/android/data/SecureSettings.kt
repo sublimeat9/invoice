@@ -11,7 +11,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Stores the server URL and the API token. The token is encrypted with an AES-GCM key that lives
+ * Stores the server URL and the login session. The session token is encrypted with an AES-GCM key that lives
  * in the Android Keystore, so it cannot be read from a backup or by copying the app's files.
  */
 class SecureSettings(context: Context) {
@@ -21,9 +21,31 @@ class SecureSettings(context: Context) {
         get() = prefs.getString(KEY_URL, DEFAULT_URL) ?: DEFAULT_URL
         set(value) = prefs.edit().putString(KEY_URL, value.trim()).apply()
 
+    /** The session token of the signed-in user ("" when signed out or expired). */
     var token: String
         get() = prefs.getString(KEY_TOKEN, null)?.let { runCatching { decrypt(it) }.getOrNull() } ?: ""
-        set(value) = prefs.edit().putString(KEY_TOKEN, encrypt(value.trim())).apply()
+        private set(value) = prefs.edit().putString(KEY_TOKEN, encrypt(value)).apply()
+
+    /** The signed-in user, or `null` if there is no valid session. */
+    fun currentUser(): UserInfo? {
+        if (token.isEmpty() || prefs.getLong(KEY_EXPIRES, 0) * 1000 <= System.currentTimeMillis()) return null
+        val name = prefs.getString(KEY_USER, null) ?: return null
+        return UserInfo(prefs.getLong(KEY_USER_ID, 0), name, prefs.getString(KEY_ROLE, "operator") ?: "operator")
+    }
+
+    fun saveSession(login: LoginResult) {
+        token = login.token
+        prefs.edit()
+            .putLong(KEY_EXPIRES, login.expiresAt)
+            .putLong(KEY_USER_ID, login.user.id)
+            .putString(KEY_USER, login.user.username)
+            .putString(KEY_ROLE, login.user.role)
+            .apply()
+    }
+
+    fun clearSession() {
+        prefs.edit().remove(KEY_TOKEN).remove(KEY_EXPIRES).remove(KEY_USER).remove(KEY_USER_ID).remove(KEY_ROLE).apply()
+    }
 
     fun connection() = ApiClient.Connection(baseUrl, token)
 
@@ -56,8 +78,12 @@ class SecureSettings(context: Context) {
 
     private companion object {
         const val KEY_URL = "base_url"
-        const val KEY_TOKEN = "token_encrypted"
-        const val KEY_ALIAS = "invoicing_api_token"
+        const val KEY_TOKEN = "session_token_encrypted"
+        const val KEY_EXPIRES = "session_expires_at"
+        const val KEY_USER = "user_name"
+        const val KEY_USER_ID = "user_id"
+        const val KEY_ROLE = "user_role"
+        const val KEY_ALIAS = "invoicing_session_token"
         const val TRANSFORMATION = "AES/GCM/NoPadding"
         const val IV_SIZE = 12
 

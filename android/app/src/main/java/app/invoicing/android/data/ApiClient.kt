@@ -15,16 +15,18 @@ class ApiException(val status: Int, message: String) : Exception(message)
  * Client of the backend HTTP API (`/invoices`, `/products`, `/customers`, `/config`).
  * Uses only the platform's HttpURLConnection and org.json, so it adds no dependencies.
  */
-class ApiClient(private val connection: () -> Connection) {
+class ApiClient(
+    private val connection: () -> Connection,
+    /** Called when the server rejects the session token (expired, revoked or user disabled). */
+    private val onUnauthorized: () -> Unit = {},
+) {
 
     data class Connection(val baseUrl: String, val token: String)
 
     private suspend fun request(method: String, path: String, body: JSONObject? = null): String =
         withContext(Dispatchers.IO) {
             val conn = connection()
-            if (conn.baseUrl.isBlank() || conn.token.isBlank()) {
-                throw ApiException(0, "Set the server URL and token in Settings")
-            }
+            if (conn.baseUrl.isBlank()) throw ApiException(0, "Enter the server URL")
             val http = try {
                 URL(conn.baseUrl.trimEnd('/') + path).openConnection() as HttpURLConnection
             } catch (e: IOException) {
@@ -35,7 +37,7 @@ class ApiClient(private val connection: () -> Connection) {
                 http.connectTimeout = 10_000
                 // Issuing waits for the SRI, which can take a while.
                 http.readTimeout = 90_000
-                http.setRequestProperty("Authorization", "Bearer ${conn.token}")
+                if (conn.token.isNotBlank()) http.setRequestProperty("Authorization", "Bearer ${conn.token}")
                 if (body != null) {
                     http.doOutput = true
                     http.setRequestProperty("Content-Type", "application/json")
@@ -44,6 +46,7 @@ class ApiClient(private val connection: () -> Connection) {
                 val status = http.responseCode
                 val stream = if (status in 200..299) http.inputStream else http.errorStream
                 val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                if (status == 401 && path != "/auth/login" && path != "/auth/setup" && path != "/auth/register") onUnauthorized()
                 if (status !in 200..299) throw ApiException(status, errorMessage(status, text))
                 text
             } catch (e: ApiException) {
@@ -57,12 +60,39 @@ class ApiClient(private val connection: () -> Connection) {
 
     private fun errorMessage(status: Int, body: String): String =
         runCatching { JSONObject(body).getString("error") }.getOrNull()
-            ?: if (status == 401) "Wrong API token" else "Error $status"
+            ?: "Error $status"
 
     private fun query(vararg params: Pair<String, Any?>): String {
         val parts = params.filter { it.second != null && it.second.toString().isNotBlank() }
             .joinToString("&") { "${it.first}=${URLEncoder.encode(it.second.toString(), "UTF-8")}" }
         return if (parts.isEmpty()) "" else "?$parts"
+    }
+
+    // ---------- accounts ----------
+
+    suspend fun setupRequired(): Boolean =
+        JSONObject(request("GET", "/auth/status")).getBoolean("setup_required")
+
+    suspend fun login(username: String, password: String): LoginResult = LoginResult.from(
+        JSONObject(request("POST", "/auth/login", JSONObject().put("username", username).put("password", password))),
+    )
+
+    /** First run only: creates the administrator and signs in. */
+    suspend fun createAdmin(username: String, password: String): LoginResult = LoginResult.from(
+        JSONObject(request("POST", "/auth/setup", JSONObject().put("username", username).put("password", password))),
+    )
+
+    /** Public sign-up: creates an operator account and signs in. */
+    suspend fun register(username: String, password: String): LoginResult = LoginResult.from(
+        JSONObject(request("POST", "/auth/register", JSONObject().put("username", username).put("password", password))),
+    )
+
+    suspend fun logout() {
+        request("POST", "/auth/logout")
+    }
+
+    suspend fun changePassword(current: String, new: String) {
+        request("PUT", "/auth/password", JSONObject().put("current_password", current).put("new_password", new))
     }
 
     // ---------- invoices ----------
