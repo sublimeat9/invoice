@@ -89,7 +89,7 @@ impl Servicio {
     }
 
     /// Reintenta los comprobantes que quedaron `PENDIENTE`. Devuelve el resultado de cada
-    /// uno; un fallo de red en uno no detiene a los demás.
+    /// uno; un fallo de red en uno no detiene a los demás (queda `PENDIENTE`).
     pub async fn reintentar_pendientes(&self) -> Result<Vec<(String, Result<Registro, ServicioError>)>, ServicioError> {
         let mut out = vec![];
         for p in self.store.pendientes()? {
@@ -99,12 +99,13 @@ impl Servicio {
         Ok(out)
     }
 
+    /// Envía y registra el resultado. Si el SRI no responde (error de red/servicio), el
+    /// comprobante queda `PENDIENTE` —con el motivo en `mensajes`— y se devuelve igualmente
+    /// el registro, para que quien llama conozca la clave de acceso y pueda reintentar.
     async fn enviar(&self, clave: &str, firmado: &str) -> Result<Registro, ServicioError> {
-        let rec = self.sri.recepcion(firmado.as_bytes()).await;
-        let rec = match rec {
+        let rec = match self.sri.recepcion(firmado.as_bytes()).await {
             Ok(r) => r,
-            // Sin respuesta: queda PENDIENTE para reintentar.
-            Err(e) => return Err(e.into()),
+            Err(e) => return self.dejar_pendiente(clave, e),
         };
         if !rec.recibida() && !rec.ya_registrada() {
             // Rechazo definitivo en recepción: no tiene sentido reintentar el mismo XML.
@@ -112,10 +113,14 @@ impl Servicio {
                 .actualizar_estado(clave, &rec.estado, None, None, resumen(&rec.mensajes).as_deref())?;
             return Ok(self.registro(clave)?);
         }
-        let au: Autorizacion = self
+        let au: Autorizacion = match self
             .sri
             .esperar_autorizacion(clave, std::time::Duration::from_secs(3), 10)
-            .await?;
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => return self.dejar_pendiente(clave, e),
+        };
         self.store.actualizar_estado(
             clave,
             &au.estado,
@@ -123,6 +128,12 @@ impl Servicio {
             au.fecha_autorizacion.as_deref(),
             resumen(&au.mensajes).as_deref(),
         )?;
+        Ok(self.registro(clave)?)
+    }
+
+    fn dejar_pendiente(&self, clave: &str, e: SriError) -> Result<Registro, ServicioError> {
+        self.store
+            .actualizar_estado(clave, "PENDIENTE", None, None, Some(&format!("último intento: {e}")))?;
         Ok(self.registro(clave)?)
     }
 

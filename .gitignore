@@ -19,3 +19,6 @@ target/
 node_modules/
 .svelte-kit/
 build/
+
+# Certificado de prueba autofirmado (sin valor; contraseña test1234)
+!backend/tests/fixtures/*.p12

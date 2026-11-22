@@ -49,7 +49,7 @@ async fn main() {
         for (clave, r) in srv.reintentar_pendientes().await.expect("pendientes") {
             match r {
                 Ok(reg) => println!("{clave}: {}", reg.estado),
-                Err(e) => println!("{clave}: sigue pendiente ({e})"),
+                Err(e) => println!("{clave}: error ({e})"),
             }
         }
         return;
@@ -74,12 +74,15 @@ async fn main() {
         Ok(reg) => {
             println!("secuencial {} -> {}", reg.secuencial, reg.estado);
             println!("clave: {}", reg.clave_acceso);
+            if reg.estado == "PENDIENTE" {
+                println!("(el SRI no respondió; reintente con `reintentar`)");
+            }
             if let Some(m) = reg.mensajes {
                 println!("{m}");
             }
         }
         Err(e) => {
-            eprintln!("error: {e}\n(si ya se firmó, quedó PENDIENTE: use `reintentar`)");
+            eprintln!("error: {e}");
             std::process::exit(1);
         }
     }
