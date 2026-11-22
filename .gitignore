@@ -39,3 +39,7 @@ android/.kotlin/
 *.aab
 *.jks
 *.keystore
+
+# Vercel
+vercel/target/
+vercel/.vercel/

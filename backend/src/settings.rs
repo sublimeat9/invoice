@@ -8,7 +8,7 @@ use crate::{
 };
 use rusqlite::{params, OptionalExtension};
 
-fn environment_text(a: Environment) -> &'static str {
+pub(crate) fn environment_text(a: Environment) -> &'static str {
     match a {
         Environment::Testing => "test",
         Environment::Production => "production",

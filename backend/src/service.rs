@@ -3,13 +3,16 @@
 //! modo que si el proceso muere o el SRI no responde se puede reintentar con el mismo XML
 //! (misma clave de acceso) con `retry_pending`.
 
+use std::sync::Arc;
+
 use crate::{
     access_key::{random_numeric_code, Environment},
     crypto::{self, EncryptionKey},
+    db::Db,
     invoice::{Buyer, Invoice, Issuer, Line},
     signing::{CertSigner, SigningError},
     sri::{Authorization, Message, SriClient, SriError},
-    store::{Meta, Record, Store, StoreError},
+    store::{Meta, Record, StoreError},
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -28,7 +31,7 @@ pub enum ServiceError {
 }
 
 pub struct Service {
-    pub store: Store,
+    pub store: Arc<dyn Db>,
     encryption_key: EncryptionKey,
     /// Solo para pruebas: apunta el cliente SOAP a un SRI simulado.
     sri_base: Option<String>,
@@ -88,7 +91,11 @@ fn environment_from_key(access_key: &str) -> Environment {
 
 impl Service {
     /// `secret` es `ENCRYPTION_KEY`: cifra el certificado guardado en la base.
-    pub fn new(store: Store, secret: &str) -> Self {
+    pub fn new(store: impl Db + 'static, secret: &str) -> Self {
+        Self::from_arc(Arc::new(store), secret)
+    }
+
+    pub fn from_arc(store: Arc<dyn Db>, secret: &str) -> Self {
         Self {
             store,
             encryption_key: crypto::derive_key(secret),
@@ -123,15 +130,17 @@ impl Service {
     }
 
     /// Carga y valida la configuración necesaria para emitir.
-    pub fn config(&self, owner: i64) -> Result<Config, ServiceError> {
+    pub async fn config(&self, owner: i64) -> Result<Config, ServiceError> {
         let (issuer, environment) = self
             .store
-            .load_issuer(owner)?
+            .load_issuer(owner)
+            .await?
             .ok_or_else(|| ServiceError::NotConfigured("faltan los datos del emisor".into()))?;
         issuer.validate().map_err(ServiceError::NotConfigured)?;
         let (p12, pass) = self
             .store
             .load_certificate(owner, &self.encryption_key)
+            .await
             .map_err(ServiceError::NotConfigured)?
             .ok_or_else(|| {
                 ServiceError::NotConfigured("falta cargar el certificado .p12".into())
@@ -151,7 +160,7 @@ impl Service {
 
     /// Emite una factura de punta a punta y devuelve el registro final guardado.
     pub async fn issue(&self, owner: i64, s: InvoiceRequest) -> Result<Record, ServiceError> {
-        let cfg = self.config(owner)?;
+        let cfg = self.config(owner).await?;
         let mut invoice = Invoice {
             environment: cfg.environment,
             issuer: cfg.issuer.clone(),
@@ -165,12 +174,15 @@ impl Service {
         };
         invoice.to_xml().map_err(ServiceError::InvalidData)?;
 
-        invoice.sequence = self.store.reserve_sequence(
-            owner,
-            cfg.environment,
-            &cfg.issuer.establishment,
-            &cfg.issuer.emission_point,
-        )?;
+        invoice.sequence = self
+            .store
+            .reserve_sequence(
+                owner,
+                cfg.environment,
+                &cfg.issuer.establishment,
+                &cfg.issuer.emission_point,
+            )
+            .await?;
         let (xml, access_key) = invoice.to_xml().map_err(ServiceError::InvalidData)?;
         let signed = cfg.signer.sign(&xml)?;
         let meta = Meta {
@@ -181,7 +193,8 @@ impl Service {
             total_amount: invoice.grand_total(),
         };
         self.store
-            .save_pending(owner, &access_key, invoice.sequence, &signed, &meta)?;
+            .save_pending(owner, &access_key, invoice.sequence, &signed, &meta)
+            .await?;
 
         self.send(&access_key, &signed).await
     }
@@ -194,7 +207,7 @@ impl Service {
         owner: Option<i64>,
     ) -> Result<Vec<(String, Result<Record, ServiceError>)>, ServiceError> {
         let mut out = vec![];
-        for p in self.store.pending(owner)? {
+        for p in self.store.pending(owner).await? {
             let r = self.send(&p.access_key, &p.signed_xml).await;
             out.push((p.access_key, r));
         }
@@ -208,51 +221,58 @@ impl Service {
         let sri = self.sri(environment_from_key(access_key));
         let reception = match sri.reception(signed.as_bytes()).await {
             Ok(r) => r,
-            Err(e) => return self.leave_pending(access_key, e),
+            Err(e) => return self.leave_pending(access_key, e).await,
         };
         if !reception.received() && !reception.already_registered() {
             // Rechazo definitivo en recepción: no tiene sentido reintentar el mismo XML.
-            self.store.update_status(
-                access_key,
-                &reception.status,
-                None,
-                None,
-                summary(&reception.messages).as_deref(),
-            )?;
-            return Ok(self.record(access_key)?);
+            self.store
+                .update_status(
+                    access_key,
+                    &reception.status,
+                    None,
+                    None,
+                    summary(&reception.messages).as_deref(),
+                )
+                .await?;
+            return Ok(self.record(access_key).await?);
         }
         let authorization: Authorization = match sri
             .wait_for_authorization(access_key, std::time::Duration::from_secs(3), 10)
             .await
         {
             Ok(a) => a,
-            Err(e) => return self.leave_pending(access_key, e),
+            Err(e) => return self.leave_pending(access_key, e).await,
         };
-        self.store.update_status(
-            access_key,
-            &authorization.status,
-            authorization.authorization_number.as_deref(),
-            authorization.authorization_date.as_deref(),
-            summary(&authorization.messages).as_deref(),
-        )?;
-        Ok(self.record(access_key)?)
+        self.store
+            .update_status(
+                access_key,
+                &authorization.status,
+                authorization.authorization_number.as_deref(),
+                authorization.authorization_date.as_deref(),
+                summary(&authorization.messages).as_deref(),
+            )
+            .await?;
+        Ok(self.record(access_key).await?)
     }
 
-    fn leave_pending(&self, access_key: &str, e: SriError) -> Result<Record, ServiceError> {
-        self.store.update_status(
-            access_key,
-            "PENDIENTE",
-            None,
-            None,
-            Some(&format!("último intento: {e}")),
-        )?;
-        Ok(self.record(access_key)?)
+    async fn leave_pending(&self, access_key: &str, e: SriError) -> Result<Record, ServiceError> {
+        self.store
+            .update_status(
+                access_key,
+                "PENDIENTE",
+                None,
+                None,
+                Some(&format!("último intento: {e}")),
+            )
+            .await?;
+        Ok(self.record(access_key).await?)
     }
 
-    fn record(&self, access_key: &str) -> Result<Record, StoreError> {
+    async fn record(&self, access_key: &str) -> Result<Record, StoreError> {
         Ok(self
             .store
-            .get_record_any(access_key)?
+            .get_record_any(access_key)
+            .await?
             .expect("comprobante recién guardado"))
     }
 }

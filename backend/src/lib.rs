@@ -1,10 +1,13 @@
 pub mod access_key;
 pub mod accounts;
 pub mod api;
+pub mod boot;
 pub mod catalog;
 pub mod catastro;
 pub mod crypto;
+pub mod db;
 pub mod invoice;
+pub mod pg;
 pub mod service;
 pub mod settings;
 pub mod signing;

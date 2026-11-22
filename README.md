@@ -14,6 +14,9 @@ al SRI y guarda su estado de autorización, desde la web, el escritorio o el tel
 - **Escritorio (`desktop/`)**: la misma interfaz empaquetada con Tauri, con el backend dentro del
   mismo proceso, sin puerto de red; los datos quedan en la carpeta de la aplicación. Los
   instaladores para Windows, macOS y Linux los genera `.github/workflows/desktop.yml`.
+- **Vercel (`vercel/`)**: el mismo backend como función de Vercel, con los datos en Postgres
+  (Supabase). El backend admite los dos almacenamientos: SQLite (escritorio y servidor simple) y
+  Postgres (despliegues sin disco, o con varias instancias).
 - **Android (`android/`)**: cliente nativo en Kotlin y Jetpack Compose que consume la misma API.
   Consulta y filtra comprobantes, reintenta los pendientes, comparte el XML, emite facturas y
   administra productos y clientes.

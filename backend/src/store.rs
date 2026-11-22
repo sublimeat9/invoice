@@ -8,6 +8,9 @@ use std::sync::Mutex;
 pub enum StoreError {
     #[error("base de datos: {0}")]
     Db(#[from] rusqlite::Error),
+    /// Otro motor (Postgres): el mensaje del driver.
+    #[error("base de datos: {0}")]
+    Backend(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,13 +123,18 @@ CREATE TABLE IF NOT EXISTS users (
     active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+CREATE TABLE IF NOT EXISTS throttle (
+    key TEXT PRIMARY KEY,
+    hits INTEGER NOT NULL,
+    since INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS sessions (
     token_hash TEXT PRIMARY KEY,
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     expires_at INTEGER NOT NULL
 );";
 
-fn env_label(a: Environment) -> &'static str {
+pub(crate) fn env_label(a: Environment) -> &'static str {
     match a {
         Environment::Testing => "TEST",
         Environment::Production => "PRODUCTION",
@@ -310,6 +318,44 @@ impl Store {
         Ok((v, total))
     }
 
+    /// ¿Esta clave superó `max` intentos dentro de la ventana de `window` segundos?
+    pub fn throttle_blocked(&self, key: &str, max: u32, window: i64) -> Result<bool, StoreError> {
+        let c = self.conn.lock().unwrap();
+        let row: Option<(i64, i64)> = c
+            .query_row(
+                "SELECT hits, since FROM throttle WHERE key = ?1",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        let now = unix_now();
+        match row {
+            Some((_, since)) if since + window < now => {
+                c.execute("DELETE FROM throttle WHERE key = ?1", [key])?;
+                Ok(false)
+            }
+            Some((hits, _)) => Ok(hits >= max as i64),
+            None => Ok(false),
+        }
+    }
+
+    pub fn throttle_hit(&self, key: &str) -> Result<(), StoreError> {
+        self.conn.lock().unwrap().execute(
+            "INSERT INTO throttle (key, hits, since) VALUES (?1, 1, ?2)
+             ON CONFLICT (key) DO UPDATE SET hits = hits + 1",
+            params![key, unix_now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn throttle_clear(&self, key: &str) -> Result<(), StoreError> {
+        self.conn
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM throttle WHERE key = ?1", [key])?;
+        Ok(())
+    }
+
     /// Pendientes de un usuario, o de todos (`None`, para el reintento en segundo plano).
     pub fn pending(&self, owner: Option<i64>) -> Result<Vec<Record>, StoreError> {
         let c = self.conn.lock().unwrap();
@@ -335,6 +381,13 @@ impl Store {
             )
             .optional()?)
     }
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 const SELECT: &str = "SELECT access_key, sequence, issue_date, document_type, id_number,

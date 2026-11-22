@@ -76,7 +76,7 @@ pub(super) async fn search(
         Ok(f) => f,
         Err(m) => return error(StatusCode::BAD_REQUEST, &m),
     };
-    match st.service.store.search(me.id, &f) {
+    match st.service.store.search(me.id, &f).await {
         Ok((v, total)) => Json(serde_json::json!({
             "total": total,
             "items": v.into_iter().map(RecordDto::summary).collect::<Vec<_>>(),
@@ -108,7 +108,7 @@ pub(super) async fn report(
         Ok(f) => f,
         Err(m) => return error(StatusCode::BAD_REQUEST, &m),
     };
-    let items = match st.service.store.search(me.id, &f) {
+    let items = match st.service.store.search(me.id, &f).await {
         Ok((v, _)) => v,
         Err(e) => return service_error(e.into()),
     };

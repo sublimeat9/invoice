@@ -22,11 +22,11 @@ pub(super) async fn view_config(
     Extension(me): Extension<User>,
 ) -> Response {
     let sv = &st.service;
-    let issuer = match sv.store.load_issuer(me.id) {
+    let issuer = match sv.store.load_issuer(me.id).await {
         Ok(e) => e,
         Err(e) => return service_error(e.into()),
     };
-    let certificate = match sv.store.load_certificate(me.id, sv.encryption_key()) {
+    let certificate = match sv.store.load_certificate(me.id, sv.encryption_key()).await {
         Ok(None) => serde_json::json!({ "loaded": false }),
         Ok(Some((p12, pass))) => match CertSigner::from_p12(&p12, &pass).and_then(|f| f.info()) {
             Ok(i) => {
@@ -44,7 +44,7 @@ pub(super) async fn view_config(
         "issuer": issuer.map(|(e, _)| e),
         "environment": if environment == Environment::Production { "production" } else { "test" },
         "certificate": certificate,
-        "ready": sv.config(me.id).is_ok(),
+        "ready": sv.config(me.id).await.is_ok(),
     }))
     .into_response()
 }
@@ -98,6 +98,7 @@ pub(super) async fn save_issuer(
         .service
         .store
         .load_certificate(me.id, st.service.encryption_key())
+        .await
     {
         if let Ok(signer) = CertSigner::from_p12(&p12, &pass) {
             if !signer.belongs_to_ruc(&e.ruc) {
@@ -105,7 +106,7 @@ pub(super) async fn save_issuer(
             }
         }
     }
-    match st.service.store.save_issuer(me.id, &e, env_label) {
+    match st.service.store.save_issuer(me.id, &e, env_label).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => service_error(e.into()),
     }
@@ -142,7 +143,7 @@ pub(super) async fn save_certificate(
         Err(e) => return error(StatusCode::BAD_REQUEST, &e.to_string()),
     };
     // The signature must belong to the RUC of this account (so nobody invoices as someone else).
-    match st.service.store.load_issuer(me.id) {
+    match st.service.store.load_issuer(me.id).await {
         Ok(Some((issuer, _))) if signer.belongs_to_ruc(&issuer.ruc) => {}
         Ok(Some(_)) => return error(StatusCode::BAD_REQUEST, NOT_YOURS),
         Ok(None) => {
@@ -163,6 +164,7 @@ pub(super) async fn save_certificate(
         .service
         .store
         .save_certificate(me.id, st.service.encryption_key(), &p12, &c.password)
+        .await
     {
         Ok(()) => Json(info).into_response(),
         Err(e) => service_error(e.into()),

@@ -1,6 +1,7 @@
 //! Servidor HTTP. Configuración por variables de entorno (solo lo mínimo para arrancar):
 //!
 //!   ENCRYPTION_KEY   clave con la que se cifra el certificado en la base (≥ 16 caracteres)
+//!   DATABASE_URL     Postgres (p. ej. Supabase); si no está, se usa SQLite
 //!   DB_PATH          archivo SQLite (por defecto facturas.db)
 //!   BIND             dirección de escucha (por defecto 127.0.0.1:3000)
 //!   CATASTRO_URL     (opcional) base del servicio de consulta de RUC del SRI, para pruebas
@@ -12,51 +13,18 @@
 //! (o la API: `PUT /config/issuer`, `PUT /config/certificate`).
 
 use invoice_rust::{
-    accounts::Role,
     api::{router, AppState},
-    service::Service,
-    store::Store,
+    boot::service_from_env,
 };
 use std::{sync::Arc, time::Duration};
 
-fn required_env(k: &str, min: usize) -> String {
-    let v = std::env::var(k).unwrap_or_default();
-    if v.len() < min {
-        eprintln!("{k} es obligatoria y debe tener al menos {min} caracteres");
-        std::process::exit(2);
-    }
-    v
-}
-
-/// Creates the first administrator from the environment, only if there are no users yet.
-fn bootstrap_admin(store: &Store) {
-    let (Ok(user), Ok(password)) = (std::env::var("ADMIN_USER"), std::env::var("ADMIN_PASSWORD"))
-    else {
-        return;
-    };
-    if store.count_users().unwrap_or(1) > 0 {
-        return;
-    }
-    match store.create_user(&user, &password, Role::Admin) {
-        Ok(u) => println!("administrador '{}' creado", u.username),
-        Err(e) => {
-            eprintln!("no se pudo crear el administrador: {e}");
-            std::process::exit(2);
-        }
-    }
-}
-
 #[tokio::main]
 async fn main() {
-    let secret = required_env("ENCRYPTION_KEY", 16);
-    let db = std::env::var("DB_PATH").unwrap_or_else(|_| "facturas.db".into());
     let bind = std::env::var("BIND").unwrap_or_else(|_| "127.0.0.1:3000".into());
-
-    let mut service = Service::new(Store::open(&db).expect("abrir base de datos"), &secret);
-    if let Ok(base) = std::env::var("CATASTRO_URL") {
-        service = service.with_catastro_base(base);
-    }
-    bootstrap_admin(&service.store);
+    let service = service_from_env().await.unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(2);
+    });
     let state = Arc::new(AppState::new(service));
 
     // Reintento automático de comprobantes PENDIENTES cada 5 minutos.

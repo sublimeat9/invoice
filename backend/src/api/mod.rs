@@ -34,15 +34,11 @@ pub use dispatch::dispatch;
 
 pub struct AppState {
     pub service: Service,
-    login_throttle: auth::LoginThrottle,
 }
 
 impl AppState {
     pub fn new(service: Service) -> Self {
-        Self {
-            service,
-            login_throttle: Default::default(),
-        }
+        Self { service }
     }
 }
 
@@ -92,6 +88,7 @@ pub fn router(state: Arc<AppState>) -> Router {
 
     Router::new()
         .route("/health", get(|| async { "ok" }))
+        .route("/internal/retry", get(auth::cron_retry))
         .route("/auth/status", get(auth::status))
         .route("/auth/setup", post(auth::setup))
         .route("/auth/register", post(auth::register))

@@ -13,51 +13,29 @@ use axum::{
     Json,
 };
 use serde::Deserialize;
-use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex},
-    time::{Duration, Instant},
-};
+use std::sync::Arc;
 
 const MAX_FAILURES: u32 = 5;
 /// Sign-ups allowed per lockout window, across all clients.
 const MAX_REGISTRATIONS: u32 = 20;
-const LOCKOUT: Duration = Duration::from_secs(15 * 60);
 
 /// The session token of the current request (extension set by [`authenticate`]).
 #[derive(Clone)]
 pub(super) struct SessionToken(String);
 
-/// Counts failed logins per username to slow down password guessing.
-#[derive(Default)]
-pub struct LoginThrottle(Mutex<HashMap<String, (u32, Instant)>>);
+/// Failed attempts are counted in the database, so the limit holds across server instances.
+const LOCKOUT_SECONDS: i64 = 15 * 60;
 
-impl LoginThrottle {
-    fn blocked(&self, user: &str) -> bool {
-        self.blocked_at(user, MAX_FAILURES)
-    }
+async fn throttled(st: &AppState, key: &str, max: u32) -> bool {
+    st.service
+        .store
+        .throttle_blocked(key, max, LOCKOUT_SECONDS)
+        .await
+        .unwrap_or(false)
+}
 
-    fn blocked_at(&self, key: &str, max: u32) -> bool {
-        let mut map = self.0.lock().unwrap();
-        match map.get(key) {
-            Some((_, since)) if since.elapsed() > LOCKOUT => {
-                map.remove(key);
-                false
-            }
-            Some((n, _)) => *n >= max,
-            None => false,
-        }
-    }
-
-    fn failed(&self, user: &str) {
-        let mut map = self.0.lock().unwrap();
-        let entry = map.entry(user.to_string()).or_insert((0, Instant::now()));
-        entry.0 += 1;
-    }
-
-    fn succeeded(&self, user: &str) {
-        self.0.lock().unwrap().remove(user);
-    }
+async fn throttle_hit(st: &AppState, key: &str) {
+    let _ = st.service.store.throttle_hit(key).await;
 }
 
 fn bearer(req: &Request) -> Option<String> {
@@ -77,7 +55,7 @@ pub(super) async fn authenticate(
     let Some(token) = bearer(&req) else {
         return error(StatusCode::UNAUTHORIZED, "inicie sesión");
     };
-    match st.service.store.session_user(&token) {
+    match st.service.store.session_user(&token).await {
         Ok(Some(user)) => {
             req.extensions_mut().insert(user);
             req.extensions_mut().insert(SessionToken(token));
@@ -108,8 +86,8 @@ pub(super) struct Credentials {
     password: String,
 }
 
-fn session_response(st: &AppState, user: User) -> Response {
-    match st.service.store.create_session(user.id) {
+async fn session_response(st: &AppState, user: User) -> Response {
+    match st.service.store.create_session(user.id).await {
         Ok((token, expires_at)) => {
             Json(serde_json::json!({ "token": token, "expires_at": expires_at, "user": user }))
                 .into_response()
@@ -120,7 +98,7 @@ fn session_response(st: &AppState, user: User) -> Response {
 
 /// Tells the interface whether it must show the first-run setup instead of the login.
 pub(super) async fn status(State(st): State<Arc<AppState>>) -> Response {
-    match st.service.store.count_users() {
+    match st.service.store.count_users().await {
         Ok(n) => Json(serde_json::json!({ "setup_required": n == 0 })).into_response(),
         Err(e) => account_error(e),
     }
@@ -128,7 +106,7 @@ pub(super) async fn status(State(st): State<Arc<AppState>>) -> Response {
 
 /// Creates the first administrator. Only works while there are no users at all.
 pub(super) async fn setup(State(st): State<Arc<AppState>>, Json(c): Json<Credentials>) -> Response {
-    match st.service.store.count_users() {
+    match st.service.store.count_users().await {
         Ok(0) => {}
         Ok(_) => return error(StatusCode::CONFLICT, "la configuración inicial ya se hizo"),
         Err(e) => return account_error(e),
@@ -137,8 +115,9 @@ pub(super) async fn setup(State(st): State<Arc<AppState>>, Json(c): Json<Credent
         .service
         .store
         .create_user(&c.username, &c.password, Role::Admin)
+        .await
     {
-        Ok(user) => session_response(&st, user),
+        Ok(user) => session_response(&st, user).await,
         Err(e) => account_error(e),
     }
 }
@@ -157,7 +136,7 @@ pub(super) async fn register(
 ) -> Response {
     let ruc = c.ruc.trim().to_string();
     // The very first account (a desktop install, say) becomes the administrator.
-    let role = match st.service.store.count_users() {
+    let role = match st.service.store.count_users().await {
         Ok(0) => Role::Admin,
         Ok(_) => Role::Operator,
         Err(e) => return account_error(e),
@@ -170,14 +149,14 @@ pub(super) async fn register(
     }
     // Global cap so the endpoint cannot be used to flood the user table or the SRI.
     const KEY: &str = "\0register";
-    if st.login_throttle.blocked_at(KEY, MAX_REGISTRATIONS) {
+    if throttled(&st, KEY, MAX_REGISTRATIONS).await {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "demasiados registros; intente más tarde",
         );
     }
-    st.login_throttle.failed(KEY);
-    if matches!(st.service.store.find_login(&ruc), Ok(Some(_))) {
+    throttle_hit(&st, KEY).await;
+    if matches!(st.service.store.find_login(&ruc).await, Ok(Some(_))) {
         return error(StatusCode::CONFLICT, "ya existe una cuenta con ese RUC");
     }
     let issuer = match st.service.catastro().lookup(&ruc).await {
@@ -187,29 +166,30 @@ pub(super) async fn register(
         }
         Err(e) => return error(StatusCode::BAD_REQUEST, &e.to_string()),
     };
-    let user = match st.service.store.create_user(&ruc, &c.password, role) {
+    let user = match st.service.store.create_user(&ruc, &c.password, role).await {
         Ok(u) => u,
         Err(e) => return account_error(e),
     };
-    if let Err(e) =
-        st.service
-            .store
-            .save_issuer(user.id, &issuer, crate::access_key::Environment::Testing)
+    if let Err(e) = st
+        .service
+        .store
+        .save_issuer(user.id, &issuer, crate::access_key::Environment::Testing)
+        .await
     {
         return error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
     }
-    session_response(&st, user)
+    session_response(&st, user).await
 }
 
 pub(super) async fn login(State(st): State<Arc<AppState>>, Json(c): Json<Credentials>) -> Response {
     let key = c.username.trim().to_lowercase();
-    if st.login_throttle.blocked(&key) {
+    if throttled(&st, &key, MAX_FAILURES).await {
         return error(
             StatusCode::TOO_MANY_REQUESTS,
             "demasiados intentos fallidos; espere 15 minutos",
         );
     }
-    let found = match st.service.store.find_login(&c.username) {
+    let found = match st.service.store.find_login(&c.username).await {
         Ok(f) => f,
         Err(e) => return account_error(e),
     };
@@ -229,11 +209,11 @@ pub(super) async fn login(State(st): State<Arc<AppState>>, Json(c): Json<Credent
     .unwrap_or((None, false));
     match (user, valid) {
         (Some(user), true) => {
-            st.login_throttle.succeeded(&key);
-            session_response(&st, user)
+            let _ = st.service.store.throttle_clear(&key).await;
+            session_response(&st, user).await
         }
         _ => {
-            st.login_throttle.failed(&key);
+            throttle_hit(&st, &key).await;
             error(StatusCode::UNAUTHORIZED, "usuario o contraseña incorrectos")
         }
     }
@@ -243,7 +223,7 @@ pub(super) async fn logout(
     State(st): State<Arc<AppState>>,
     Extension(token): Extension<SessionToken>,
 ) -> Response {
-    match st.service.store.delete_session(&token.0) {
+    match st.service.store.delete_session(&token.0).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => account_error(e),
     }
@@ -266,7 +246,7 @@ pub(super) async fn change_password(
     Extension(token): Extension<SessionToken>,
     Json(c): Json<PasswordChange>,
 ) -> Response {
-    let hash = match st.service.store.password_hash_of(user.id) {
+    let hash = match st.service.store.password_hash_of(user.id).await {
         Ok(Some(h)) => h,
         Ok(None) => return error(StatusCode::NOT_FOUND, "usuario no encontrado"),
         Err(e) => return account_error(e),
@@ -281,13 +261,44 @@ pub(super) async fn change_password(
             "la contraseña actual no es correcta",
         );
     }
-    let result = st
-        .service
-        .store
-        .set_password(user.id, &c.new_password)
-        .and_then(|()| st.service.store.delete_other_sessions(user.id, &token.0));
+    let store = &st.service.store;
+    let result = match store.set_password(user.id, &c.new_password).await {
+        Ok(()) => store.delete_other_sessions(user.id, &token.0).await,
+        Err(e) => Err(e),
+    };
     match result {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => account_error(e),
+    }
+}
+
+/// Reintento de comprobantes pendientes para despliegues sin proceso permanente (Vercel Cron).
+/// Exige `Authorization: Bearer $CRON_SECRET`; sin `CRON_SECRET` configurado, la ruta no existe.
+pub(super) async fn cron_retry(State(st): State<Arc<AppState>>, req: Request) -> Response {
+    let secret = std::env::var("CRON_SECRET").unwrap_or_default();
+    if secret.len() < 16 {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let given = bearer(&req).unwrap_or_default();
+    // Constant-time comparison: do not leak the secret through response timing.
+    let equal = given.len() == secret.len()
+        && given
+            .bytes()
+            .zip(secret.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0;
+    if !equal {
+        return error(StatusCode::UNAUTHORIZED, "no autorizado");
+    }
+    match st.service.retry_pending(None).await {
+        Ok(v) => Json(serde_json::json!({
+            "retried": v.len(),
+            "results": v.iter().map(|(k, r)| match r {
+                Ok(rec) => serde_json::json!({ "access_key": k, "status": rec.status }),
+                Err(e) => serde_json::json!({ "access_key": k, "error": e.to_string() }),
+            }).collect::<Vec<_>>(),
+        }))
+        .into_response(),
+        Err(e) => super::errors::service_error(e),
     }
 }

@@ -11,7 +11,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 
 pub(super) async fn list_users(State(st): State<Arc<AppState>>) -> Response {
-    match st.service.store.list_users() {
+    match st.service.store.list_users().await {
         Ok(users) => Json(users).into_response(),
         Err(e) => account_error(e),
     }
@@ -32,6 +32,7 @@ pub(super) async fn create_user(
         .service
         .store
         .create_user(&u.username, &u.password, u.role)
+        .await
     {
         Ok(user) => (axum::http::StatusCode::CREATED, Json(user)).into_response(),
         Err(e) => account_error(e),
@@ -55,6 +56,7 @@ pub(super) async fn update_user(
         .service
         .store
         .update_user(id, c.role, c.active, c.password.as_deref())
+        .await
     {
         Ok(user) => Json(user).into_response(),
         Err(e) => account_error(e),

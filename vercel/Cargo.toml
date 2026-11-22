@@ -1,0 +1,22 @@
+[package]
+name = "invoicing-vercel"
+version = "0.1.0"
+edition = "2021"
+description = "Backend de facturación como función de Vercel (Postgres/Supabase)"
+
+[dependencies]
+invoice-rust = { path = "../backend" }
+vercel_runtime = { version = "2", features = ["axum"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+axum = "0.8"
+tower = "0.5"
+
+[[bin]]
+name = "index"
+path = "api/index.rs"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
+strip = true

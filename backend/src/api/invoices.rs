@@ -180,7 +180,7 @@ pub(super) async fn get_invoice(
     Extension(me): Extension<User>,
     Path(access_key): Path<String>,
 ) -> Response {
-    match st.service.store.get_record(me.id, &access_key) {
+    match st.service.store.get_record(me.id, &access_key).await {
         Ok(Some(r)) => Json(RecordDto::full(r)).into_response(),
         Ok(None) => error(StatusCode::NOT_FOUND, "comprobante no encontrado"),
         Err(e) => service_error(e.into()),

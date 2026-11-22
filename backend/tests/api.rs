@@ -11,7 +11,9 @@ use invoice_rust::{
     access_key::Environment,
     accounts::Role,
     api::{router, AppState},
+    db::Db,
     invoice::Issuer,
+    pg::PgStore,
     service::Service,
     store::Store,
 };
@@ -101,9 +103,28 @@ fn issuer() -> Issuer {
     }
 }
 
+/// SQLite in memory, or Postgres (its own schema) when `TEST_DATABASE_URL` is set, so the same
+/// suite checks both engines.
+async fn new_store() -> Arc<dyn Db> {
+    match std::env::var("TEST_DATABASE_URL") {
+        Ok(url) => {
+            let schema = format!("t_{}", &invoice_rust::accounts::new_token()[..16]);
+            Arc::new(PgStore::connect_in_schema(&url, &schema).await.unwrap())
+        }
+        Err(_) => Arc::new(Store::in_memory().unwrap()),
+    }
+}
+
 /// The test administrator's id (the data of every test belongs to it).
-fn owner_id(st: &AppState) -> i64 {
-    st.service.store.find_login("admin").unwrap().unwrap().0.id
+async fn owner_id(st: &AppState) -> i64 {
+    st.service
+        .store
+        .find_login("admin")
+        .await
+        .unwrap()
+        .unwrap()
+        .0
+        .id
 }
 
 /// Servicio ya configurado (emisor + certificado) apuntando a un SRI simulado.
@@ -111,24 +132,32 @@ async fn app(sri_base: String) -> (Router, Arc<AppState>, String) {
     let (r, st, token) = app_unconfigured(sri_base).await;
     st.service
         .store
-        .save_issuer(owner_id(&st), &issuer(), Environment::Testing)
+        .save_issuer(owner_id(&st).await, &issuer(), Environment::Testing)
+        .await
         .unwrap();
     st.service
         .store
-        .save_certificate(owner_id(&st), st.service.encryption_key(), P12, "test1234")
+        .save_certificate(
+            owner_id(&st).await,
+            st.service.encryption_key(),
+            P12,
+            "test1234",
+        )
+        .await
         .unwrap();
     (r, st, token)
 }
 
 /// App without issuer or certificate, plus the token of a signed-in administrator.
 async fn app_unconfigured(sri_base: String) -> (Router, Arc<AppState>, String) {
-    let service = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba")
+    let service = Service::from_arc(new_store().await, "clave-de-cifrado-de-prueba")
         .con_sri_base(sri_base)
         .with_catastro_base(mock_catastro().await);
     let st = Arc::new(AppState::new(service));
     st.service
         .store
         .create_user("admin", ADMIN_PASSWORD, Role::Admin)
+        .await
         .unwrap();
     let app = router(st.clone());
     let token = login(&app, "admin", ADMIN_PASSWORD).await.1["token"]
@@ -311,7 +340,8 @@ async fn invalid_data_is_400_and_does_not_spend_sequence() {
     assert_eq!(
         st.service
             .store
-            .reserve_sequence(owner_id(&st), Environment::Testing, "001", "001")
+            .reserve_sequence(owner_id(&st).await, Environment::Testing, "001", "001")
+            .await
             .unwrap(),
         1
     );
@@ -363,7 +393,8 @@ async fn unconfigured_cannot_issue() {
     assert_eq!(
         st.service
             .store
-            .reserve_sequence(owner_id(&st), Environment::Testing, "001", "001")
+            .reserve_sequence(owner_id(&st).await, Environment::Testing, "001", "001")
+            .await
             .unwrap(),
         1
     );
@@ -635,7 +666,7 @@ async fn in_process_dispatch_without_network() {
 
 #[tokio::test]
 async fn first_run_setup_then_login() {
-    let service = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba");
+    let service = Service::from_arc(new_store().await, "clave-de-cifrado-de-prueba");
     let app = router(Arc::new(AppState::new(service)));
     let (_, v) = json(
         app.clone()
@@ -800,7 +831,15 @@ async fn regular_accounts_cannot_manage_users() {
     );
 
     // The only administrator cannot be removed.
-    let admin_id = st.service.store.find_login("admin").unwrap().unwrap().0.id;
+    let admin_id = st
+        .service
+        .store
+        .find_login("admin")
+        .await
+        .unwrap()
+        .unwrap()
+        .0
+        .id;
     let r = app
         .clone()
         .oneshot(req(
@@ -857,7 +896,7 @@ async fn users_can_change_their_own_password() {
 
 #[tokio::test]
 async fn public_registration_creates_active_operators() {
-    let service = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba")
+    let service = Service::from_arc(new_store().await, "clave-de-cifrado-de-prueba")
         .with_catastro_base(mock_catastro().await);
     let app = router(Arc::new(AppState::new(service)));
     let body = r#"{"ruc":"1790011674001","password":"ana-password-1"}"#;
@@ -949,7 +988,7 @@ async fn public_registration_creates_active_operators() {
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
 
     // With the SRI unreachable, sign-up is refused rather than creating unverified accounts.
-    let down = Service::new(Store::in_memory().unwrap(), "clave-de-cifrado-de-prueba")
+    let down = Service::from_arc(new_store().await, "clave-de-cifrado-de-prueba")
         .with_catastro_base("http://127.0.0.1:1".into());
     let app2 = router(Arc::new(AppState::new(down)));
     let admin = r#"{"username":"boss","password":"long-enough-password"}"#;
@@ -1091,6 +1130,7 @@ async fn each_account_only_sees_its_own_business() {
         .service
         .store
         .find_login("1790011674001")
+        .await
         .unwrap()
         .unwrap()
         .0
@@ -1098,6 +1138,7 @@ async fn each_account_only_sees_its_own_business() {
     let s = &st.service.store;
     assert_eq!(
         s.reserve_sequence(ana_id, Environment::Testing, "001", "001")
+            .await
             .unwrap(),
         1
     );
@@ -1140,4 +1181,36 @@ async fn signature_must_belong_to_the_accounts_ruc() {
         .await
         .unwrap();
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn cron_retry_needs_the_secret() {
+    let (app, _, _) = app_unconfigured("http://127.0.0.1:1".into()).await;
+    // Without CRON_SECRET configured the route does not exist.
+    std::env::remove_var("CRON_SECRET");
+    let r = app
+        .clone()
+        .oneshot(req("GET", "/internal/retry", None, None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    std::env::set_var("CRON_SECRET", "secreto-del-cron-de-prueba");
+    let r = app
+        .clone()
+        .oneshot(req("GET", "/internal/retry", Some("otro"), None))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    let r = app
+        .clone()
+        .oneshot(req(
+            "GET",
+            "/internal/retry",
+            Some("secreto-del-cron-de-prueba"),
+            None,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(r.status(), StatusCode::OK);
+    std::env::remove_var("CRON_SECRET");
 }
